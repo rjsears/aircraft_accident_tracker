@@ -245,7 +245,7 @@ flowchart TB
         T1[/"Daily 8 AM<br/>(Schedule Trigger)"/]
     end
 
-    subgraph CONFIG["⚙CONFIGURATION"]
+    subgraph CONFIG["CONFIGURATION"]
         ST["Set Trigger – Daily<br/>triggerSource = 'daily'"]
         DC["Define Config<br/>(Generates 45 items:<br/>15 aircraft types × 3 pages)"]
         RAC{"Route After Config"}
@@ -256,7 +256,7 @@ flowchart TB
         PARSE["Parse ASN Table<br/>(Normalize aircraft types)"]
         AGG["Aggregate Before DB Query"]
         QER["Query Existing Records<br/>(Get current DB state)"]
-        FILTER["Filter Detail Fetch Candidates<br/>⚡ Smart age-based filtering"]
+        FILTER["Filter Detail Fetch Candidates<br/>Smart age-based filtering"]
         DETAIL["Fetch Detail Pages<br/>(Rate limited: 5 per 2 sec)"]
         EXTRACT["Extract ASN Sources<br/>(Narratives + links + hash)"]
         MERGE["Merge All Results"]
@@ -556,7 +556,7 @@ flowchart TB
     end
 
     subgraph SERPAPI["SERPAPI PATH"]
-        QSC["Query SerpAPI Candidates<br/>⚡ Smart refresh scheduling<br/>(Age-based re-search logic)"]
+        QSC["Query SerpAPI Candidates<br/>Smart refresh scheduling<br/>(Age-based re-search logic)"]
         FSC["Filter SerpAPI Candidates<br/>(No Google-sourced links yet,<br/>Apply SERPAPI_LIMIT)"]
         CSS{"Check SerpAPI Skip"}
         SPC["SerpAPI Processing Complete"]
@@ -630,7 +630,7 @@ flowchart TB
         FFA["Format for AI<br/>(Prepare incident data structure)"]
         CAS{"Check AI Skip"}
         APC["AI Processing Complete"]
-        ASE["Aviation Safety Expert<br/>(GPT-4o Agent:<br/>temp=0, max_tokens=500)"]
+        ASE["Aviation Safety Expert<br/>(GPT-5.1 Agent:<br/>max_tokens=500)"]
         PAR["Parse AI Response<br/>(Extract summary,<br/>handle errors gracefully)"]
         UND["Update Narrative in DB<br/>(Save summary,<br/>merge any ASN links)"]
     end
@@ -705,7 +705,7 @@ flowchart TB
     end
 
     subgraph RULES["AGE-BASED RULES"]
-        R1["> 5 years old:<br/>❌ NEVER re-fetch<br/>(Investigation long complete)"]
+        R1["> 5 years old:<br/>NEVER re-fetch<br/>(Investigation long complete)"]
         R2["2-5 years old:<br/>Skip if updated < 6 months ago<br/>(Final reports published)"]
         R3["1-2 years old:<br/>Skip if updated < 3 months ago<br/>(Investigation likely complete)"]
         R4["< 1 year old:<br/>Skip if updated < 2 weeks ago<br/>(Active investigation period)"]
