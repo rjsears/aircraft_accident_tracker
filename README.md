@@ -2,7 +2,7 @@
 
 [![n8n](https://img.shields.io/badge/n8n-workflow-FF6D5A?logo=n8n&logoColor=white)](https://n8n.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-412991?logo=openai&logoColor=white)](https://openai.com)
+[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.1-412991?logo=openai&logoColor=white)](https://openai.com)
 ![Last Commit](https://img.shields.io/github/last-commit/rjsears/aircraft_accident_tracker)
 ![Issues](https://img.shields.io/github/issues/rjsears/aircraft_accident_tracker)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
