@@ -374,7 +374,7 @@ curl -X POST https://your-domain.com/webhook/citation-monitor-run
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGER["🔘 TRIGGER"]
+    subgraph TRIGGER["TRIGGER"]
         T2[/"Manual Run Webhook<br/>POST /webhook/citation-monitor-run"/]
     end
 
