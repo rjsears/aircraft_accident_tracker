@@ -1,22 +1,26 @@
-# Citation Aircraft Accident Monitor
+# Aircraft Accident Tracker
 
 [![n8n](https://img.shields.io/badge/n8n-workflow-FF6D5A?logo=n8n&logoColor=white)](https://n8n.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com)
+[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--5.1-412991?logo=openai&logoColor=white)](https://openai.com)
 ![Last Commit](https://img.shields.io/github/last-commit/rjsears/aircraft_accident_tracker)
 ![Issues](https://img.shields.io/github/issues/rjsears/aircraft_accident_tracker)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 ![Contributors](https://img.shields.io/github/contributors/rjsears/aircraft_accident_tracker)
 ![Release](https://img.shields.io/github/v/release/rjsears/aircraft_accident_tracker)
 
+>### *"Those who cannot remember the past are condemned to repeat it."* — George Santayana
+
+---
+
 ## What This Project Does
 
 The Aircraft Accident Tracker is an automated safety intelligence system that tracks incidents and accidents involving Cessna Citation aircraft, although it is easily adapted for any aircraft. It continuously monitors the [Aviation Safety Network (ASN)](https://aviation-safety.net) database, extracting incident data including locations, operators, damage assessments, and full narrative reports. Each incident is then enriched with an AI-generated summary using OpenAI's GPT-5.1 model, which distills lengthy investigation narratives into concise overviews. For fatal and serious accidents as well as aircraft marked as `w/o` (written off), the system also searches Google via SerpAPI to discover related NTSB investigation reports, news coverage, flight tracking data, and photos, automatically categorizing and linking these resources for easy access.
 
-The entire system runs as an n8n workflow with PostgreSQL storage, designed for hands-off operation. A scheduled trigger runs daily at 8 AM to collect new incidents and process enrichments, while four additional webhook endpoints allow on-demand execution of specific processing phases. The workflow implements intelligent deduplication using composite keys on aircraft registration and date, hash-based change detection to identify when ASN updates their narratives, and rate limiting to respect external service quotas. All data flows into an interactive HTML dashboard that supports filtering by aircraft type, date range, keywords, and fatality status, with expandable rows showing full incident details alongside categorized resource links.
+The entire system runs as an n8n workflow with PostgreSQL storage, designed for hands-off operation. A scheduled trigger runs daily at 8 AM (user defined) to collect new incidents and process enrichments, while four additional webhook endpoints allow on-demand execution of specific processing phases. The workflow implements intelligent deduplication using composite keys on aircraft registration and date, hash-based change detection to identify when ASN updates their narratives, and rate limiting to respect external service quotas. All data flows into an interactive HTML dashboard that supports filtering by aircraft type, date range, keywords, and fatality status, with expandable rows showing full incident details alongside categorized resource links.
   
   
-For those new to n8n visit my [n8n_nginx](https://github.com/rjsears/n8n_nginx) repo and you can have an complete n8n install with postgres and more up and running in 20 minutes. 
+> ** New to n8n?** Check out my [n8n_nginx](https://github.com/rjsears/n8n_nginx) repository for a complete n8n + PostgreSQL + Nginx setup with SSL. You can have a production-ready n8n instance running in about 20 minutes! See the [Quick Start with n8n_nginx](#-quick-start-with-n8n_nginx) section below. 
 
 ---
 
@@ -24,7 +28,8 @@ For those new to n8n visit my [n8n_nginx](https://github.com/rjsears/n8n_nginx) 
 
 - [Features](#-features)
 - [How It Works](#-how-it-works)
-- [Quick Start](#-quick-start)
+- [Quick Start with n8n_nginx](#-quick-start-with-n8n_nginx)
+- [Quick Start (Manual)](#quick-start-manual-docker-setup)
 - [Detailed Installation](#-detailed-installation)
 - [Configuration Guide](#-configuration-guide)
 - [Usage & Operations](#-usage--operations)
@@ -39,13 +44,14 @@ For those new to n8n visit my [n8n_nginx](https://github.com/rjsears/n8n_nginx) 
 ## ✨ Features
 
 ### Automated Data Collection
-- **Multi-aircraft monitoring** — Track multiple Citation models simultaneously (CJ1 through CJ4, M2, and more)
+- **Multi-aircraft monitoring** — Track multiple Citation models simultaneously (CE525 series, CE500 series, CE560XL series, and Bombardier Challengers)
+- **Automatic pagination** — Handles ASN's paginated results, fetching all pages for aircraft types with extensive accident histories
 - **Full narrative extraction** — Pulls complete investigation reports from ASN detail pages
 - **Smart deduplication** — Composite key prevents duplicate records while allowing updates
 - **Change detection** — Hash-based tracking identifies when ASN updates their narratives
 
 ### AI-Powered Enrichment
-- **GPT-4o-mini summaries** — Transforms lengthy narratives into concise 3-6 sentence overviews
+- **GPT-5.1 summaries** — Transforms lengthy narratives into concise 4-6 sentence overviews
 - **Factual extraction only** — AI is prompted to use only stated facts, no speculation
 - **Batch processing** — Efficiently handles large backlogs with rate limiting
 
@@ -89,7 +95,7 @@ graph TD
 
 **Processing Flow:**
 
-1. **Collection** — Fetches ASN type pages for configured aircraft, parses incident tables, then fetches individual detail pages to extract full narratives and source links
+1. **Collection** — Fetches ASN type pages for configured aircraft (including paginated results for types with many incidents), parses incident tables, then fetches individual detail pages to extract full narratives and source links
 
 2. **Storage** — Upserts all incidents to PostgreSQL using registration + date as the deduplication key, preserving existing AI summaries and links during updates
 
@@ -101,7 +107,65 @@ graph TD
 
 ---
 
-## Quick Start
+## 🚀 Quick Start with n8n_nginx
+
+The fastest way to get up and running is using my [n8n_nginx](https://github.com/rjsears/n8n_nginx) repository, which provides a complete Docker-based n8n setup with PostgreSQL, Nginx reverse proxy, and automatic SSL certificates.
+
+### Step 1: Deploy n8n Infrastructure (15-20 minutes)
+
+```bash
+# Clone the n8n_nginx repository
+git clone https://github.com/rjsears/n8n_nginx
+cd n8n_nginx
+
+# Copy and configure the environment file
+cp .env.example .env
+nano .env  # Edit with your domain, email, and passwords
+
+# Start the stack
+docker-compose up -d
+
+# Verify everything is running
+docker-compose ps
+```
+
+This gives you:
+- ✅ n8n workflow automation platform
+- ✅ PostgreSQL database (ready for our workflow)
+- ✅ Nginx reverse proxy with automatic SSL
+- ✅ Secure webhook endpoints
+
+### Step 2: Set Up the Accident Tracker (5-10 minutes)
+
+```bash
+# Create the citation_accidents database
+docker exec -it n8n_postgres psql -U n8n -c "CREATE DATABASE citation_accidents;"
+
+# Create output directory for HTML reports
+mkdir -p /path/to/n8n_nginx/accident_results
+```
+
+### Step 3: Import and Configure the Workflow
+
+1. Open n8n at `https://your-domain.com`
+2. Go to **Workflows** → **Import from File** → Select `workflow.json`
+3. Configure credentials (see [Credentials Setup](#step-4-configure-credentials))
+4. Enable and run the **Create Table (Run Once)** node once, then disable it again
+5. **Activate** the workflow
+
+### Step 4: Test It
+
+```bash
+curl -X POST https://your-domain.com/webhook/citation-monitor-run
+```
+
+That's it! The workflow will now run daily at 8 AM (or your defined time) and collect aircraft incident data.
+
+---
+
+## Quick Start (Manual Docker Setup)
+
+If you prefer to set up Docker manually without the n8n_nginx stack:
 
 ```bash
 # 1. Clone the repository
@@ -145,6 +209,45 @@ curl -X POST http://localhost:5678/webhook/citation-monitor-run
 | Docker Compose | 2.0+ | Required |
 | OpenAI API Key | — | Required for AI summaries |
 | SerpAPI Key | — | Optional, for Google link enrichment |
+
+### Obtaining API Keys
+
+#### OpenAI API Key (Required)
+(You can use whatever agent you choose, I had the best luck with OpenAI)
+
+The OpenAI API key is required to generate AI-powered narrative summaries for each incident.
+
+1. **Create an OpenAI account** at [platform.openai.com](https://platform.openai.com/signup)
+2. **Verify your email** and complete account setup
+3. **Add billing information** at [platform.openai.com/account/billing](https://platform.openai.com/account/billing)
+   - OpenAI requires a payment method on file
+   - You can set usage limits to control costs
+   - Typical usage for this project: $1-5/month depending on incident volume
+4. **Generate an API key**:
+   - Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+   - Click **"Create new secret key"**
+   - Give it a name (e.g., "Aircraft Accident Monitor")
+   - **Copy the key immediately** — it won't be shown again!
+5. **Store the key securely** — you'll need it when configuring n8n credentials
+
+> ** Cost Tip:** This project uses GPT-5.1 which is cost-effective for summarization tasks. Processing 100 incidents typically costs less than $0.50.
+
+#### SerpAPI Key (Optional)
+
+SerpAPI provides Google search results to find related news articles, NTSB reports, and other resources for fatal incidents. This is optional but recommended for comprehensive incident coverage.
+
+1. **Create a SerpAPI account** at [serpapi.com/users/sign_up](https://serpapi.com/users/sign_up)
+2. **Choose a plan**:
+   - **Free tier**: 250 searches/month (good for testing/low utilization configurations)
+   - **Developer plan**: 5,000 searches/month ($75/month)
+   - This project uses ~8 searches per daily run by default
+3. **Get your API key**:
+   - After signing in, go to [serpapi.com/manage-api-key](https://serpapi.com/manage-api-key)
+   - Your API key is displayed on the dashboard
+   - Copy the key for use in the workflow
+4. **Monitor usage** at [serpapi.com/searches](https://serpapi.com/searches)
+
+> **💡 Usage Tip:** The workflow has two configurable SerpAPI limits—one for daily/manual runs (`Filter For Enrichment` node) and one for the dedicated SerpAPI webhook (`Filter SerpAPI Candidates` node). Both default to 8 searches per run. See [Configuring SerpAPI Limits](#configuring-serpapi-limits) for adjustment instructions.
 
 ### Step 1: Docker Setup
 
@@ -292,6 +395,7 @@ The workflow includes a **Create Table (Run Once)** node that creates the requir
 
 The workflow monitors specific aircraft types defined in the **Define Aircraft Types** node. Default configuration:
 
+**CE525 Series:**
 | ICAO Code | Aircraft | ASN Page |
 |-----------|----------|----------|
 | C525 | CitationJet / CJ1 / CJ1+ | [View](https://aviation-safety.net/asndb/type/C525) |
@@ -299,6 +403,27 @@ The workflow monitors specific aircraft types defined in the **Define Aircraft T
 | C25B | Citation CJ3 / CJ3+ | [View](https://aviation-safety.net/asndb/type/C25B) |
 | C25C | Citation CJ4 | [View](https://aviation-safety.net/asndb/type/C25C) |
 | C25M | Citation M2 | [View](https://aviation-safety.net/asndb/type/C25M) |
+
+**CE500 Series:**
+| ICAO Code | Aircraft | ASN Page |
+|-----------|----------|----------|
+| C500 | Citation I | [View](https://aviation-safety.net/asndb/type/C500) |
+| C501 | Citation I/SP | [View](https://aviation-safety.net/asndb/type/C501) |
+| C550 | Citation II / Bravo | [View](https://aviation-safety.net/asndb/type/C550) |
+| C551 | Citation II/SP | [View](https://aviation-safety.net/asndb/type/C551) |
+| S550 | Citation S/II | [View](https://aviation-safety.net/asndb/type/S550) |
+| C560 | Citation V / Ultra / Encore | [View](https://aviation-safety.net/asndb/type/C560) |
+
+**CE560XL Series:**
+| ICAO Code | Aircraft | ASN Page |
+|-----------|----------|----------|
+| C56X | Citation Excel / XLS / XLS+ | [View](https://aviation-safety.net/asndb/type/C56X) |
+
+**Bombardier Challenger:**
+| ICAO Code | Aircraft | ASN Page |
+|-----------|----------|----------|
+| CL30 | Challenger 300 | [View](https://aviation-safety.net/asndb/type/CL30) |
+| CL35 | Challenger 350 | [View](https://aviation-safety.net/asndb/type/CL35) |
 
 #### Adding Aircraft Types
 
@@ -376,9 +501,37 @@ const urlBlacklist = [
 
 | Setting | Default | Location | Description |
 |---------|---------|----------|-------------|
-| Daily SerpAPI queries | 8 | `Filter For Enrichment` node | Max incidents enriched with Google links per daily run |
+| Daily SerpAPI queries | 8 | `Filter For Enrichment` node | Max incidents enriched with Google links per scheduled/manual run |
+| Manual SerpAPI queries | 8 | `Filter SerpAPI Candidates` node | Max incidents enriched when using the SerpAPI webhook |
 | AI batch size | 100 | `Query AI Candidates` node | Max incidents processed per AI run |
 | Deep refresh window | 12 months | `Query Refresh Candidates` node | How far back to check for narrative updates |
+
+#### Configuring SerpAPI Limits
+
+The workflow has two separate SerpAPI limit settings for different execution paths:
+
+1. **Daily/Manual Run Path** (`Filter For Enrichment` node): Controls Google link enrichment during scheduled 8 AM runs and manual webhook triggers (`/webhook/citation-monitor-run`)
+
+2. **Dedicated SerpAPI Webhook** (`Filter SerpAPI Candidates` node): Controls enrichment when explicitly calling the SerpAPI endpoint (`/webhook/citation-serpapi-links`)
+
+To adjust either limit, open the respective Code node and modify the `SERPAPI_LIMIT` constant at the top:
+
+```javascript
+// ============================================================
+// SERPAPI LIMIT CONFIGURATION
+// ============================================================
+// Adjust this value based on your SerpAPI plan:
+// - Free tier (250/month): Use 8 per run
+// - Developer plan (5,000/month): Use up to 1000 per run  
+// - Set to 0 to disable SerpAPI enrichment entirely
+const SERPAPI_LIMIT = 8;  // Change this value
+// ============================================================
+```
+
+**Recommendations by plan:**
+- **Free tier (250/month):** Keep both at 8 for ~30 runs/month
+- **Developer plan (5,000/month):** Increase to 100-1000 per run
+- **Unlimited needs:** Set to 1000 (practical maximum per batch)
 
 ---
 
