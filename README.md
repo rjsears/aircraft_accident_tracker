@@ -15,7 +15,7 @@
 
 ## What This Project Does
 
-The Aircraft Accident Tracker is an automated safety intelligence system that tracks incidents and accidents involving Cessna Citation aircraft, although it is easily adapted for any aircraft. It continuously monitors the [Aviation Safety Network (ASN)](https://aviation-safety.net) database, extracting incident data including locations, operators, damage assessments, and full narrative reports. Each incident is then enriched with an AI-generated summary using OpenAI's GPT-4o model, which distills lengthy investigation narratives into concise overviews. For fatal and serious accidents as well as aircraft marked as `w/o` (written off), the system also searches Google via SerpAPI to discover related NTSB investigation reports, news coverage, flight tracking data, and photos, automatically categorizing and linking these resources for easy access.
+The Aircraft Accident Tracker is an automated safety intelligence system that tracks incidents and accidents involving Cessna Citation aircraft, although it is easily adapted for any aircraft. It continuously monitors the [Aviation Safety Network (ASN)](https://aviation-safety.net) database, extracting incident data including locations, operators, damage assessments, and full narrative reports. Each incident is then enriched with an AI-generated summary using OpenAI's GPT-5.1 model, which distills lengthy investigation narratives into concise overviews. For fatal and serious accidents as well as aircraft marked as `w/o` (written off), the system also searches Google via SerpAPI to discover related NTSB investigation reports, news coverage, flight tracking data, and photos, automatically categorizing and linking these resources for easy access.
 
 The entire system runs as an n8n workflow with PostgreSQL storage, designed for hands-off operation. A scheduled trigger runs daily at 8 AM (user defined) to collect new incidents and process enrichments, while four additional webhook endpoints allow on-demand execution of specific processing phases. The workflow implements intelligent deduplication using composite keys on aircraft registration and date, hash-based change detection to identify when ASN updates their narratives, and rate limiting to respect external service quotas. All data flows into an interactive HTML dashboard that supports filtering by aircraft type, date range, keywords, and fatality status, with expandable rows showing full incident details alongside categorized resource links.
 
@@ -59,7 +59,7 @@ The entire system runs as an n8n workflow with PostgreSQL storage, designed for 
 - **Change detection** — Hash-based tracking identifies when ASN updates their narratives
 
 ### AI-Powered Enrichment
-- **GPT-4o summaries** — Transforms lengthy narratives into concise 4-6 sentence overviews
+- **GPT-5.1 summaries** — Transforms lengthy narratives into concise 4-6 sentence overviews
 - **Factual extraction only** — AI is prompted to use only stated facts, no speculation
 - **Batch processing** — Efficiently handles large backlogs with rate limiting
 
@@ -83,7 +83,7 @@ The entire system runs as an n8n workflow with PostgreSQL storage, designed for 
 
 ---
 
-## 🏗️ System Architecture Overview
+## System Architecture Overview
 
 The workflow is built around a centralized configuration architecture with intelligent routing that directs each trigger to its appropriate processing path.
 
@@ -91,7 +91,7 @@ The workflow is built around a centralized configuration architecture with intel
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGERS["🎯 TRIGGER LAYER"]
+    subgraph TRIGGERS["TRIGGER LAYER"]
         direction LR
         T1[/"Daily 8 AM<br/>(Schedule)"/]
         T2[/"Manual Run Webhook<br/>/webhook/citation-monitor-run"/]
@@ -100,7 +100,7 @@ flowchart TB
         T5[/"Manual AI Narrative Webhook<br/>/webhook/citation-ai-narrative"/]
     end
 
-    subgraph ROUTING["🔀 ROUTING LAYER"]
+    subgraph ROUTING["ROUTING LAYER"]
         ST1["Set Trigger – Daily"]
         ST2["Set Trigger – Manual"]
         ST3["Set Trigger – Deep Refresh"]
@@ -109,14 +109,14 @@ flowchart TB
         RAC{"Route After Config<br/>(Switch Node)"}
     end
 
-    subgraph PATHS["📍 EXECUTION PATHS"]
+    subgraph PATHS["EXECUTION PATHS"]
         P1["Main Collection Path<br/>(Daily/Manual)"]
         P2["Deep Refresh Path"]
         P3["SerpAPI-Only Path"]
         P4["AI Narrative Path<br/>(Independent)"]
     end
 
-    subgraph OUTPUT["📊 OUTPUT LAYER"]
+    subgraph OUTPUT["OUTPUT LAYER"]
         DB[(PostgreSQL<br/>citation_incidents)]
         HTML["HTML Dashboard<br/>index.html"]
     end
@@ -160,7 +160,7 @@ flowchart TB
 
 ---
 
-## 🛤️ Trigger Paths – Complete Reference
+## Trigger Paths – Complete Reference
 
 The workflow has **5 distinct entry points**, each designed for a specific purpose. Understanding these paths is critical for effective operation and troubleshooting.
 
@@ -168,11 +168,11 @@ The workflow has **5 distinct entry points**, each designed for a specific purpo
 
 | # | Trigger | Endpoint | Purpose | Routes Through Config? |
 |---|---------|----------|---------|:----------------------:|
-| 1 | Daily 8 AM | Schedule | Full automated daily collection | ✅ Yes |
-| 2 | Manual Run | `POST /webhook/citation-monitor-run` | On-demand full collection | ✅ Yes |
-| 3 | Deep Refresh | `POST /webhook/citation-deep-refresh` | Re-check ASN for narrative updates | ✅ Yes |
-| 4 | Manual SerpAPI | `POST /webhook/citation-serpapi-links` | Enrich incidents with Google links | ✅ Yes |
-| 5 | Manual AI | `POST /webhook/citation-ai-narrative` | Process AI summaries only | ❌ No (Independent) |
+| 1 | Daily 8 AM | Schedule | Full automated daily collection |          Yes           |
+| 2 | Manual Run | `POST /webhook/citation-monitor-run` | On-demand full collection |          Yes           |
+| 3 | Deep Refresh | `POST /webhook/citation-deep-refresh` | Re-check ASN for narrative updates |          Yes           |
+| 4 | Manual SerpAPI | `POST /webhook/citation-serpapi-links` | Enrich incidents with Google links |          Yes           |
+| 5 | Manual AI | `POST /webhook/citation-ai-narrative` | Process AI summaries only |    No (Independent)    |
 
 ### How Routing Works
 
@@ -234,17 +234,17 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGER["🕐 TRIGGER"]
+    subgraph TRIGGER["TRIGGER"]
         T1[/"Daily 8 AM<br/>(Schedule Trigger)"/]
     end
 
-    subgraph CONFIG["⚙️ CONFIGURATION"]
+    subgraph CONFIG["⚙CONFIGURATION"]
         ST["Set Trigger – Daily<br/>triggerSource = 'daily'"]
         DC["Define Config<br/>(Generates 45 items:<br/>15 aircraft types × 3 pages)"]
         RAC{"Route After Config"}
     end
 
-    subgraph COLLECTION["📥 DATA COLLECTION PHASE"]
+    subgraph COLLECTION["DATA COLLECTION PHASE"]
         FETCH["Fetch ASN Page<br/>(45 parallel requests)"]
         PARSE["Parse ASN Table<br/>(Normalize aircraft types)"]
         AGG["Aggregate Before DB Query"]
@@ -256,18 +256,18 @@ flowchart TB
         FLAT["Flatten Results<br/>(Strip additional_links<br/>to preserve Google links)"]
     end
 
-    subgraph DATABASE["💾 DATABASE PHASE"]
+    subgraph DATABASE["DATABASE PHASE"]
         UPSERT["Upsert Incidents<br/>(Key: registration + date_string)"]
         CONS["Consolidate Before Query"]
         QAI["Query All Incidents"]
     end
 
-    subgraph HTML1["📄 INITIAL HTML"]
+    subgraph HTML1["INITIAL HTML"]
         GEN1["Generate HTML"]
         WRITE1["Write HTML File"]
     end
 
-    subgraph NARRATIVE["🤖 AI NARRATIVE PHASE"]
+    subgraph NARRATIVE["AI NARRATIVE PHASE"]
         FN["Filter For Narrative<br/>(Has raw_narrative > 50 chars<br/>but no narrative_summary)"]
         CNS{"Check Narrative Skip"}
         WN["Wait for Narrative"]
@@ -278,7 +278,7 @@ flowchart TB
         UND["Update Narrative in DB<br/>(Merges ASN links)"]
     end
 
-    subgraph ENRICHMENT["🔗 LINK ENRICHMENT PHASE"]
+    subgraph ENRICHMENT["LINK ENRICHMENT PHASE"]
         FE["Filter For Enrichment<br/>(Fatal/destroyed/substantial,<br/>no Google-sourced links)"]
         CIS{"Check If Skip"}
         WE["Wait for Enrichment"]
@@ -287,7 +287,7 @@ flowchart TB
         ULD["Update Links in DB"]
     end
 
-    subgraph FINAL["📊 FINAL OUTPUT"]
+    subgraph FINAL["FINAL OUTPUT"]
         QFD["Query Final Data"]
         RH["Regenerate HTML"]
         WFH["Write Final HTML"]
@@ -378,13 +378,13 @@ flowchart TB
         T2[/"Manual Run Webhook<br/>POST /webhook/citation-monitor-run"/]
     end
 
-    subgraph CONFIG["⚙️ CONFIGURATION"]
+    subgraph CONFIG["CONFIGURATION"]
         ST["Set Trigger – Manual<br/>triggerSource = 'manual'"]
         DC["Define Config"]
         RAC{"Route After Config"}
     end
 
-    subgraph MAIN["📥 MAIN COLLECTION PATH"]
+    subgraph MAIN["MAIN COLLECTION PATH"]
         SAME["(Identical to Daily 8 AM path)<br/><br/>• Full ASN collection<br/>• Smart detail fetch<br/>• Database upsert<br/>• AI narrative processing<br/>• SerpAPI link enrichment<br/>• HTML regeneration"]
     end
 
@@ -421,17 +421,17 @@ curl -X POST https://your-domain.com/webhook/citation-deep-refresh
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGER["🔄 TRIGGER"]
+    subgraph TRIGGER["TRIGGER"]
         T3[/"Deep Refresh Webhook<br/>POST /webhook/citation-deep-refresh"/]
     end
 
-    subgraph CONFIG["⚙️ CONFIGURATION"]
+    subgraph CONFIG["CONFIGURATION"]
         ST["Set Trigger – Deep Refresh<br/>triggerSource = 'deep-refresh'"]
         DC["Define Config"]
         RAC{"Route After Config"}
     end
 
-    subgraph REFRESH["🔍 DEEP REFRESH PATH"]
+    subgraph REFRESH["DEEP REFRESH PATH"]
         QRC["Query Refresh Candidates<br/>(Incidents from last 12 months<br/>with valid ASN wikibase URLs)"]
         FAR["Fetch ASN for Refresh<br/>(Rate limited: 5 per 2 sec)"]
         EHN["Extract and Hash Narrative<br/>(Compute simpleHash,<br/>compare to stored hash)"]
@@ -440,7 +440,7 @@ flowchart TB
         RC["Refresh Complete"]
     end
 
-    subgraph OUTPUT["📊 OUTPUT"]
+    subgraph OUTPUT["OUTPUT"]
         QFD["Query Final Data"]
         RH["Regenerate HTML"]
         WFH["Write Final HTML"]
@@ -538,17 +538,17 @@ curl -X POST https://your-domain.com/webhook/citation-serpapi-links
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGER["🔍 TRIGGER"]
+    subgraph TRIGGER["TRIGGER"]
         T4[/"Manual SerpAPI Webhook<br/>POST /webhook/citation-serpapi-links"/]
     end
 
-    subgraph CONFIG["⚙️ CONFIGURATION"]
+    subgraph CONFIG["CONFIGURATION"]
         ST["Set Trigger – SerpAPI<br/>triggerSource = 'serpapi'"]
         DC["Define Config<br/>(Provides link filter rules)"]
         RAC{"Route After Config"}
     end
 
-    subgraph SERPAPI["🔗 SERPAPI PATH"]
+    subgraph SERPAPI["SERPAPI PATH"]
         QSC["Query SerpAPI Candidates<br/>⚡ Smart refresh scheduling<br/>(Age-based re-search logic)"]
         FSC["Filter SerpAPI Candidates<br/>(No Google-sourced links yet,<br/>Apply SERPAPI_LIMIT)"]
         CSS{"Check SerpAPI Skip"}
@@ -558,7 +558,7 @@ flowchart TB
         ULD["Update Links in DB<br/>(Merge with existing,<br/>set serpapi_searched_at)"]
     end
 
-    subgraph OUTPUT["📊 OUTPUT"]
+    subgraph OUTPUT["OUTPUT"]
         QFD["Query Final Data"]
         RH["Regenerate HTML"]
         WFH["Write Final HTML"]
@@ -614,11 +614,11 @@ curl -X POST https://your-domain.com/webhook/citation-ai-narrative
 
 ```mermaid
 flowchart TB
-    subgraph TRIGGER["🤖 TRIGGER"]
+    subgraph TRIGGER["TRIGGER"]
         T5[/"Manual AI Narrative Webhook<br/>POST /webhook/citation-ai-narrative"/]
     end
 
-    subgraph AIPATH["🤖 AI NARRATIVE PATH (INDEPENDENT)"]
+    subgraph AIPATH["AI NARRATIVE PATH (INDEPENDENT)"]
         QAC["Query AI Candidates<br/>(Has raw_narrative > 50 chars,<br/>No narrative_summary or < 20 chars)"]
         FFA["Format for AI<br/>(Prepare incident data structure)"]
         CAS{"Check AI Skip"}
@@ -628,7 +628,7 @@ flowchart TB
         UND["Update Narrative in DB<br/>(Save summary,<br/>merge any ASN links)"]
     end
 
-    subgraph OUTPUT["📊 OUTPUT"]
+    subgraph OUTPUT["OUTPUT"]
         QFD["Query Final Data"]
         RH["Regenerate HTML"]
         WFH["Write Final HTML"]
@@ -655,13 +655,13 @@ flowchart TB
 
 #### AI Processing Details
 
-The **Aviation Safety Expert** agent uses GPT-4o with carefully tuned parameters:
+The **Aviation Safety Expert** agent uses GPT-5.1 with carefully tuned parameters:
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Temperature | 0 | Deterministic output for consistency |
-| Max Tokens | 500 | Sufficient for 4-6 sentence summary |
-| Model | GPT-4o | Best balance of quality and cost |
+| Parameter | Value   | Rationale |
+|-----------|---------|-----------|
+| Temperature | 0       | Deterministic output for consistency |
+| Max Tokens | 500     | Sufficient for 4-6 sentence summary |
+| Model | GPT-5.1 | Best balance of quality and cost |
 
 **System prompt enforces**:
 - Use only facts explicitly stated in narrative
@@ -672,7 +672,7 @@ The **Aviation Safety Expert** agent uses GPT-4o with carefully tuned parameters
 
 ---
 
-## 📅 Date-Based Processing Logic
+## Date-Based Processing Logic
 
 The workflow uses several date-based algorithms to optimize processing efficiency while maintaining data freshness. Understanding these is essential for effective operation.
 
@@ -686,27 +686,27 @@ The logic evaluates each incident's age and last update time to determine if fet
 
 ```mermaid
 flowchart TB
-    subgraph INPUT["📥 INPUT"]
+    subgraph INPUT["INPUT"]
         INC["Incident from<br/>Parse ASN Table"]
         DB["Database Record<br/>(if exists)"]
     end
 
-    subgraph DECISION["🤔 DECISION LOGIC"]
+    subgraph DECISION["DECISION LOGIC"]
         EXISTS{"Record exists<br/>in database?"}
         DETAIL{"Has detail data?<br/>(raw_narrative > 50 chars)"}
         AGE{"How old is<br/>the incident?"}
     end
 
-    subgraph RULES["📋 AGE-BASED RULES"]
+    subgraph RULES["AGE-BASED RULES"]
         R1["> 5 years old:<br/>❌ NEVER re-fetch<br/>(Investigation long complete)"]
         R2["2-5 years old:<br/>Skip if updated < 6 months ago<br/>(Final reports published)"]
         R3["1-2 years old:<br/>Skip if updated < 3 months ago<br/>(Investigation likely complete)"]
         R4["< 1 year old:<br/>Skip if updated < 2 weeks ago<br/>(Active investigation period)"]
     end
 
-    subgraph OUTPUT["📤 RESULT"]
-        FETCH["✅ FETCH<br/>detail page"]
-        SKIP["⏭️ SKIP<br/>(Already up to date)"]
+    subgraph OUTPUT["RESULT"]
+        FETCH["FETCH<br/>detail page"]
+        SKIP["⏭SKIP<br/>(Already up to date)"]
     end
 
     INC --> EXISTS
@@ -756,21 +756,21 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph CRITERIA["🎯 SELECTION CRITERIA"]
+    subgraph CRITERIA["SELECTION CRITERIA"]
         C1["Must be significant incident:<br/>• fatalities > 0 OR<br/>• damage = 'w/o' (destroyed) OR<br/>• damage = 'sub' (substantial)"]
         C2["Must have registration"]
     end
     
-    subgraph SEARCH_LOGIC["🔍 WHEN TO SEARCH"]
+    subgraph SEARCH_LOGIC["WHEN TO SEARCH"]
         NEVER["Never searched yet<br/>(serpapi_searched_at IS NULL)"]
         RECENT["Incident < 6 months old<br/>AND last search > 30 days ago"]
         OLDER["Incident 6mo - 2yr old<br/>AND last search > 90 days ago"]
         ANCIENT["Incident > 2 years old<br/>→ No automatic re-search"]
     end
     
-    subgraph RESULT["📋 RESULT"]
-        SELECT["✅ Selected for<br/>Google search"]
-        EXCLUDE["❌ Not selected"]
+    subgraph RESULT["RESULT"]
+        SELECT["Selected for<br/>Google search"]
+        EXCLUDE["Not selected"]
     end
 
     C1 --> C2
@@ -875,7 +875,7 @@ By focusing on the last 12 months, the deep refresh:
 
 ---
 
-## 🚀 Quick Start with n8n_nginx
+## Quick Start with n8n_nginx
 
 The fastest way to get up and running is using my [n8n_nginx](https://github.com/rjsears/n8n_nginx) repository, which provides a complete Docker-based n8n setup with PostgreSQL, Nginx reverse proxy, and automatic SSL certificates.
 
@@ -898,10 +898,10 @@ docker-compose ps
 ```
 
 This gives you:
-- ✅ n8n workflow automation platform
-- ✅ PostgreSQL database (ready for our workflow)
-- ✅ Nginx reverse proxy with automatic SSL
-- ✅ Secure webhook endpoints
+- n8n workflow automation platform
+- PostgreSQL database (ready for our workflow)
+- Nginx reverse proxy with automatic SSL
+- Secure webhook endpoints
 
 ### Step 2: Set Up the Accident Tracker (5-10 minutes)
 
@@ -967,7 +967,7 @@ curl -X POST http://localhost:5678/webhook/citation-monitor-run
 
 ---
 
-## 📦 Detailed Installation
+## Detailed Installation
 
 ### Prerequisites
 
@@ -987,7 +987,7 @@ curl -X POST http://localhost:5678/webhook/citation-monitor-run
 3. Generate an API key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
 4. Copy the key immediately—it won't be shown again!
 
-> **💡 Cost Tip:** This project uses GPT-4o which is cost-effective for summarization tasks. Processing 100 incidents typically costs less than $0.50.
+> ** Cost Tip:** This project uses GPT-5.1 which is cost-effective for summarization tasks. Processing 100 incidents typically costs less than $0.50.
 
 #### SerpAPI Key (Optional)
 
@@ -1099,7 +1099,7 @@ curl -X POST http://localhost:5678/webhook/citation-monitor-run
 
 ---
 
-## ⚙️ Configuration Guide
+## Configuration Guide
 
 ### Aircraft Types
 
@@ -1133,7 +1133,7 @@ The workflow monitors aircraft types defined in **Define Config**:
 
 ---
 
-## 📋 Usage & Operations
+## Usage & Operations
 
 ### Webhook Reference
 
@@ -1171,7 +1171,7 @@ docker exec n8n_postgres pg_dump -U n8n citation_accidents > backup_$(date +%Y%m
 
 ---
 
-## 🗄️ Database Schema
+## Database Schema
 
 ### Table: `citation_incidents`
 
@@ -1205,7 +1205,7 @@ docker exec n8n_postgres pg_dump -U n8n citation_accidents > backup_$(date +%Y%m
 
 ---
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -1231,7 +1231,7 @@ docker exec -it n8n_postgres psql -U n8n -d citation_accidents -c \
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please:
 
@@ -1244,13 +1244,13 @@ Contributions are welcome! Please:
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [Aviation Safety Network](https://aviation-safety.net) — Primary data source
 - [n8n](https://n8n.io) — Workflow automation platform
@@ -1259,14 +1259,14 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 ---
 
-## 💬 Support
+## Support
 
 - **Issues:** [GitHub Issues](https://github.com/rjsears/aircraft_accident_tracker/issues)
 - **Discussions:** [GitHub Discussions](https://github.com/rjsears/aircraft_accident_tracker/discussions)
 
 ---
 
-## ❤️ Special Thanks
+## Special Thanks
 
 * **My amazing and loving family!** My family puts up with all my coding and automation projects and encourages me in everything. Without them, my projects would not be possible.
 * **My brother James**, who is a continual source of inspiration to me and others. Everyone should have a brother as awesome as mine!
