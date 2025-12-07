@@ -1,19 +1,23 @@
-# ✈️ Citation Aircraft Accident Monitor
+# Citation Aircraft Accident Monitor
 
 [![n8n](https://img.shields.io/badge/n8n-workflow-FF6D5A?logo=n8n&logoColor=white)](https://n8n.io)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com)
+![Last Commit](https://img.shields.io/github/last-commit/rjsears/aircraft_accident_tracker)
+![Issues](https://img.shields.io/github/issues/rjsears/aircraft_accident_tracker)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Contributors](https://img.shields.io/github/contributors/rjsears/aircraft_accident_tracker)
+![Release](https://img.shields.io/github/v/release/rjsears/aircraft_accident_tracker)
 
 ## What This Project Does
 
-The Citation Aircraft Accident Monitor is an automated safety intelligence system that tracks incidents and accidents involving Cessna Citation aircraft. It continuously monitors the [Aviation Safety Network (ASN)](https://aviation-safety.net) database, extracting incident data including locations, operators, damage assessments, and full narrative reports. Each incident is then enriched with an AI-generated summary using OpenAI's GPT-4o-mini model, which distills lengthy investigation narratives into concise 3-6 sentence overviews. For fatal accidents, the system also searches Google via SerpAPI to discover related NTSB investigation reports, news coverage, flight tracking data, and photos, automatically categorizing and linking these resources for easy access.
+The Citation Aircraft Accident Monitor is an automated safety intelligence system that tracks incidents and accidents involving Cessna Citation aircraft. It continuously monitors the [Aviation Safety Network (ASN)](https://aviation-safety.net) database, extracting incident data including locations, operators, damage assessments, and full narrative reports. Each incident is then enriched with an AI-generated summary using OpenAI's GPT-5.1 model, which distills lengthy investigation narratives into concise 3-6 sentence overviews. For fatal accidents, the system also searches Google via SerpAPI to discover related NTSB investigation reports, news coverage, flight tracking data, and photos, automatically categorizing and linking these resources for easy access.
 
 The entire system runs as an n8n workflow with PostgreSQL storage, designed for hands-off operation. A scheduled trigger runs daily at 8 AM to collect new incidents and process enrichments, while four additional webhook endpoints allow on-demand execution of specific processing phases. The workflow implements intelligent deduplication using composite keys on aircraft registration and date, hash-based change detection to identify when ASN updates their narratives, and rate limiting to respect external service quotas. All data flows into an interactive HTML dashboard that supports filtering by aircraft type, date range, keywords, and fatality status, with expandable rows showing full incident details alongside categorized resource links.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Features](#-features)
 - [How It Works](#-how-it-works)
@@ -62,7 +66,7 @@ The entire system runs as an n8n workflow with PostgreSQL storage, designed for 
 
 ---
 
-## 🔄 How It Works
+## How It Works
 
 ```mermaid
 graph TD
@@ -72,12 +76,12 @@ graph TD
     D --> E[Extract Narratives & Links]
     E --> F[(PostgreSQL Database)]
     F --> G{Enrichment Needed?}
-    G -->|No AI Summary| H[OpenAI GPT-4o-mini]
+    G -->|No AI Summary| H[OpenAI GPT-5.1]
     G -->|No Links & Fatal| I[SerpAPI Google Search]
     H --> F
     I --> F
     F --> J[Generate HTML Report]
-    J --> K[📄 Interactive Dashboard]
+    J --> K[Interactive Dashboard]
 ```
 
 **Processing Flow:**
@@ -86,7 +90,7 @@ graph TD
 
 2. **Storage** — Upserts all incidents to PostgreSQL using registration + date as the deduplication key, preserving existing AI summaries and links during updates
 
-3. **AI Enrichment** — Identifies incidents with raw narratives but no AI summary, sends to GPT-4o-mini with a strict factual-only prompt
+3. **AI Enrichment** — Identifies incidents with raw narratives but no AI summary, sends to GPT-5.1 with a strict factual-only prompt
 
 4. **Link Enrichment** — For fatal incidents lacking Google-sourced links, searches Google and filters results through whitelist/blacklist rules
 
@@ -94,12 +98,12 @@ graph TD
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/yourusername/citation-accident-monitor.git
-cd citation-accident-monitor
+git clone https://github.com/rjsears/aircraft_accident_tracker
+cd aircraft_accident_tracker
 
 # 2. Create environment file
 cp .env.example .env
@@ -128,7 +132,7 @@ curl -X POST http://localhost:5678/webhook/citation-monitor-run
 
 ---
 
-## 📦 Detailed Installation
+## Detailed Installation
 
 ### Prerequisites
 
@@ -279,7 +283,7 @@ The workflow includes a **Create Table (Run Once)** node that creates the requir
 
 ---
 
-## ⚙️ Configuration Guide
+## Configuration Guide
 
 ### Aircraft Types
 
@@ -375,7 +379,7 @@ const urlBlacklist = [
 
 ---
 
-## 🎯 Usage & Operations
+## Usage & Operations
 
 ### Automatic Daily Runs
 
@@ -464,22 +468,22 @@ docker exec -i n8n_postgres psql -U n8n -d citation_accidents < backup_20251205.
 
 ---
 
-## 🏗️ Architecture Reference
+## Architecture Reference
 
 ### System Components
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                         TRIGGER LAYER                                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐      │
-│  │ Schedule │ │ Manual   │ │ Deep     │ │ AI       │ │ SerpAPI  │      │
-│  │ 8 AM     │ │ Webhook  │ │ Refresh  │ │ Webhook  │ │ Webhook  │      │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘      │
+│                         TRIGGER LAYER                                   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+│  │ Schedule │ │ Manual   │ │ Deep     │ │ AI       │ │ SerpAPI  │       │
+│  │ 8 AM     │ │ Webhook  │ │ Refresh  │ │ Webhook  │ │ Webhook  │       │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘       │
 └───────┼────────────┼────────────┼────────────┼────────────┼─────────────┘
         └────────────┴─────┬──────┴────────────┴────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      CONFIGURATION LAYER                                 │
+│                      CONFIGURATION LAYER                                │
 │         ┌─────────────────────┐  ┌─────────────────────┐                │
 │         │ Define Aircraft     │  │ Define Link Filters │                │
 │         │ Types               │  │                     │                │
@@ -488,18 +492,18 @@ docker exec -i n8n_postgres psql -U n8n -d citation_accidents < backup_20251205.
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                       PROCESSING LAYER                                   │
+│                       PROCESSING LAYER                                  │
 │                                                                         │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐     │
-│  │ Data Collection │    │ AI Enrichment   │    │ Link Enrichment │     │
-│  │ (ASN Scraping)  │    │ (OpenAI)        │    │ (SerpAPI)       │     │
-│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘     │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐      │
+│  │ Data Collection │    │ AI Enrichment   │    │ Link Enrichment │      │
+│  │ (ASN Scraping)  │    │ (OpenAI)        │    │ (SerpAPI)       │      │
+│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘      │
 │           │                      │                      │               │
 └───────────┼──────────────────────┼──────────────────────┼───────────────┘
             └──────────────────────┼──────────────────────┘
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        STORAGE LAYER                                     │
+│                        STORAGE LAYER                                    │
 │                 ┌─────────────────────────┐                             │
 │                 │      PostgreSQL         │                             │
 │                 │   citation_incidents    │                             │
@@ -508,7 +512,7 @@ docker exec -i n8n_postgres psql -U n8n -d citation_accidents < backup_20251205.
                                    │
                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                        OUTPUT LAYER                                      │
+│                        OUTPUT LAYER                                     │
 │                 ┌─────────────────────────┐                             │
 │                 │   HTML Dashboard        │                             │
 │                 │   index.html            │                             │
@@ -529,7 +533,7 @@ docker exec -i n8n_postgres psql -U n8n -d citation_accidents < backup_20251205.
 
 ---
 
-## 🗄️ Database Schema
+## Database Schema
 
 ### Table: `citation_incidents`
 
@@ -569,7 +573,7 @@ docker exec -i n8n_postgres psql -U n8n -d citation_accidents < backup_20251205.
 
 ---
 
-## ❓ Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -666,7 +670,7 @@ docker exec -it n8n_postgres psql -U n8n -d citation_accidents -c \
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please:
 
@@ -681,13 +685,13 @@ Contributions are welcome! Please:
 
 ---
 
-## 📜 License
+## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - [Aviation Safety Network](https://aviation-safety.net) — Primary data source
 - [n8n](https://n8n.io) — Workflow automation platform
@@ -696,6 +700,17 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 ---
 
-<p align="center">
-Made with ❤️ for aviation safety
-</p>
+## Support
+
+- **Issues:** [GitHub Issues](https://github.com/rjsears/aircraft_accident_tracker/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/rjsears/aircraft_accident_tracker/discussions)
+- **n8n Community:** [n8n.io/community](https://n8n.io/community)
+
+---
+
+## Acknowledgments
+
+* **My Amazing and loving family!** My family puts up with all my coding and automation projects and encourages me in everything. Without them, my projects would not be possible.
+* **My brother James**, who is a continual source of inspiration to me and others. Everyone should have a brother as awesome as mine!
+
+
