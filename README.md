@@ -37,6 +37,13 @@ The entire system runs as an n8n workflow with PostgreSQL storage, designed for 
   - [Smart Detail Fetch Logic](#smart-detail-fetch-logic)
   - [SerpAPI Re-Search Scheduling](#serpapi-re-search-scheduling)
   - [Deep Refresh Window](#deep-refresh-window)
+- [Customizing Aircraft Types](#customizing-aircraft-types)
+  - [Understanding the Define Config Node](#understanding-the-define-config-node)
+  - [The Four Configuration Arrays](#the-four-configuration-arrays)
+  - [Why Normalization Rules Exist](#why-normalization-rules-exist)
+  - [Step-by-Step: Adding New Aircraft](#step-by-step-adding-new-aircraft)
+  - [Step-by-Step: Removing Aircraft](#step-by-step-removing-aircraft)
+  - [Complete Example: Cessna Piston Singles](#complete-example-cessna-piston-singles)
 - [Quick Start with n8n_nginx](#-quick-start-with-n8n_nginx)
 - [Quick Start (Manual)](#quick-start-manual-docker-setup)
 - [Detailed Installation](#-detailed-installation)
@@ -872,6 +879,561 @@ By focusing on the last 12 months, the deep refresh:
 - Minimizes unnecessary ASN requests
 - Reduces workflow execution time
 - Maintains data accuracy where it matters most
+
+---
+
+## Customizing Aircraft Types
+
+This workflow can be adapted to monitor any aircraft type available on the Aviation Safety Network. This section provides complete instructions for adding, removing, or completely replacing the monitored aircraft types.
+
+### Understanding the Define Config Node
+
+All aircraft configuration is centralized in the **Define Config** node. This node is a Code node that outputs configuration items used throughout the workflow. When you need to change which aircraft are monitored, this is the only node you need to modify.
+
+The node generates multiple output items (one per ASN page URL to fetch), but each item contains the complete configuration for the entire workflow. Downstream nodes access configuration using:
+
+```javascript
+// Get configuration from Define Config
+const config = $('Define Config').first().json;
+const normalizationRules = config._normalizationRules;
+const aircraftGroups = config._aircraftGroups;
+```
+
+### The Four Configuration Arrays
+
+The Define Config node contains four arrays that control aircraft monitoring. Each serves a distinct purpose and all four must be updated consistently when making changes.
+
+```mermaid
+flowchart TB
+    subgraph CONFIG["Define Config Node"]
+        A1["asnPagesToFetch<br/>(Which ASN pages to scrape)"]
+        A2["normalizationRules<br/>(How to categorize incidents)"]
+        A3["aircraftGroups<br/>(HTML dropdown groupings)"]
+        A4["aircraftTypeOrder<br/>(Display sort order)"]
+    end
+    
+    subgraph USAGE["Where Each Array Is Used"]
+        U1["Fetch ASN Page node<br/>(URL generation)"]
+        U2["Parse ASN Table node<br/>(Type normalization)"]
+        U3["Generate HTML node<br/>(Dropdown menu)"]
+        U4["Generate HTML node<br/>(Sort order)"]
+    end
+    
+    A1 --> U1
+    A2 --> U2
+    A3 --> U3
+    A4 --> U4
+```
+
+#### Array 1: asnPagesToFetch
+
+**Purpose**: Defines which ASN type pages to scrape for incident data.
+
+**Structure**: Simple array of ICAO type codes.
+
+```javascript
+const asnPagesToFetch = [
+  'C525', 'C25A', 'C25B', 'C25C', 'C25M',  // CE525 Series
+  'C500', 'C501', 'C550', 'C551', 'S550', 'C560',  // CE500 Series
+  'C56X',  // CE560XL Series
+  'CL30', 'CL35'  // Challengers
+];
+```
+
+**How it works**: The node generates URLs in the format `https://aviation-safety.net/asndb/type/{ICAO}` for each code. It also generates pagination URLs (page 2, page 3) for aircraft with extensive accident histories.
+
+**Finding ICAO codes**: Visit `https://aviation-safety.net/asndb/type/{CODE}` to verify a code exists. You can also search ASN for an aircraft and look at the URL of the type page.
+
+---
+
+#### Array 2: normalizationRules
+
+**Purpose**: Maps the `aircraft_type` text from ASN to the correct ICAO code and display name.
+
+**Structure**: Array of objects with `match`, `icao`, and `name` properties. Rules are checked in order; first match wins.
+
+```javascript
+const normalizationRules = [
+  // Specific models checked FIRST (more specific matches)
+  { match: 'CJ4', icao: 'C25C', name: 'Citation CJ4' },
+  { match: '525C', icao: 'C25C', name: 'Citation CJ4' },
+  { match: 'CJ3', icao: 'C25B', name: 'Citation CJ3/CJ3+' },
+  
+  // Generic matches checked LAST (less specific)
+  { match: '525', icao: 'C525', name: 'CitationJet/CJ1' },
+];
+```
+
+**Critical**: Rules are checked in order. Place more specific matches before generic ones. For example, `CJ4` must come before `525` because a "Cessna 525C Citation CJ4" contains both strings.
+
+---
+
+#### Array 3: aircraftGroups
+
+**Purpose**: Defines groupings for the HTML dashboard dropdown filter (e.g., "All CE525 Aircraft").
+
+**Structure**: Array of objects with `id`, `name`, and `types` properties.
+
+```javascript
+const aircraftGroups = [
+  { id: 'ce525', name: 'All CE525 Aircraft', types: ['C525', 'C25A', 'C25B', 'C25C', 'C25M'] },
+  { id: 'ce500', name: 'All CE500 Aircraft', types: ['C500', 'C501', 'C550', 'C551', 'S550', 'C560'] },
+  { id: 'ce560xl', name: 'All CE560XL Aircraft', types: ['C56X'] },
+  { id: 'challenger', name: 'All CL30 / CL35 Aircraft', types: ['CL30', 'CL35'] }
+];
+```
+
+**The `id` field**: Used as the HTML option value and to generate JavaScript variable names. Must be a valid JavaScript identifier (no spaces, hyphens, or special characters).
+
+**The `types` array**: Must contain ICAO codes that match what your normalization rules produce.
+
+---
+
+#### Array 4: aircraftTypeOrder
+
+**Purpose**: Controls the display order of individual aircraft types in the HTML dropdown (after the groups).
+
+**Structure**: Simple array of ICAO codes in desired display order.
+
+```javascript
+const aircraftTypeOrder = [
+  'C525', 'C25A', 'C25B', 'C25C', 'C25M',  // CE525 first
+  'C500', 'C501', 'C550', 'C551', 'S550', 'C560',  // Then CE500
+  'C56X',  // Then XL
+  'CL30', 'CL35'  // Challengers last
+];
+```
+
+**Behavior**: Aircraft types not in this array will appear at the end, sorted alphabetically.
+
+---
+
+### Why Normalization Rules Exist
+
+Normalization rules solve a critical data quality problem: **ASN cross-lists aircraft variants on related model pages**, and the `aircraft_type` field in ASN's tables often differs from the page's ICAO code.
+
+#### The Problem
+
+Consider the C525 (CitationJet) page on ASN. This page contains incidents for:
+- CitationJet (original) - should be C525
+- CJ1 - should be C525
+- CJ1+ - should be C525
+- **CJ4** - should be **C25C**, not C525!
+
+ASN groups related aircraft on the same page for user convenience, but this means you cannot rely on the page URL to determine the correct ICAO code. The `aircraft_type` field in each row contains the actual aircraft designation.
+
+```mermaid
+flowchart LR
+    subgraph ASN["ASN C525 Page"]
+        R1["Row: Cessna 525 CitationJet"]
+        R2["Row: Cessna 525 Citation CJ1+"]
+        R3["Row: Cessna 525C Citation CJ4"]
+    end
+    
+    subgraph WRONG["Without Normalization"]
+        W1["All stored as C525"]
+        W2["CJ4 incidents miscategorized!"]
+    end
+    
+    subgraph CORRECT["With Normalization"]
+        C1["C525: CitationJet, CJ1+"]
+        C2["C25C: CJ4"]
+    end
+    
+    R1 --> |"Wrong"| WRONG
+    R2 --> |"Wrong"| WRONG
+    R3 --> |"Wrong"| WRONG
+    
+    R1 --> |"Correct"| C1
+    R2 --> |"Correct"| C1
+    R3 --> |"Correct"| C2
+```
+
+#### How Normalization Works
+
+The `Parse ASN Table` node extracts the `aircraft_type` text from each row and runs it through the normalization rules:
+
+```javascript
+const normalizeAircraftType = (aircraftType) => {
+  const text = aircraftType || '';
+  const upper = text.toUpperCase();
+  
+  for (const rule of normalizationRules) {
+    if (upper.includes(rule.match.toUpperCase())) {
+      return { icao: rule.icao, name: rule.name };
+    }
+  }
+  return null;  // No match - use page ICAO as fallback
+};
+```
+
+**Key insight**: The function checks if the `aircraft_type` text **contains** the match string (case-insensitive). This allows flexible matching like:
+- "Cessna 525C Citation CJ4" contains "CJ4" -> maps to C25C
+- "Cessna 172S Skyhawk SP" contains "172" -> maps to C172
+
+---
+
+### Step-by-Step: Adding New Aircraft
+
+Follow these steps to add new aircraft types to the workflow.
+
+#### Step 1: Find the ICAO Code
+
+Visit `https://aviation-safety.net/asndb/type/` and search for your aircraft. Note the ICAO code from the URL. For example:
+- Cessna 172: `https://aviation-safety.net/asndb/type/C172` -> Code is `C172`
+- Beechcraft King Air 350: `https://aviation-safety.net/asndb/type/B350` -> Code is `B350`
+
+#### Step 2: Research Variants
+
+Click through to the ASN page and examine the `aircraft_type` column in the incident table. Note all the different ways the aircraft type is listed. For example, on the C172 page you might see:
+- "Cessna 172"
+- "Cessna 172S Skyhawk SP"
+- "Cessna 172R Skyhawk"
+- "Cessna 172N Skyhawk"
+- "Reims/Cessna F172M"
+
+#### Step 3: Update asnPagesToFetch
+
+Add the ICAO code to the array:
+
+```javascript
+const asnPagesToFetch = [
+  // Existing types...
+  'C172',  // Add new type
+];
+```
+
+#### Step 4: Create Normalization Rules
+
+Add rules for each variant you found. Order matters - more specific first:
+
+```javascript
+const normalizationRules = [
+  // Existing rules...
+  
+  // New: Cessna 172 variants
+  { match: 'Reims/Cessna F172', icao: 'C172', name: 'Cessna 172 (Reims)' },
+  { match: '172S', icao: 'C172', name: 'Cessna 172S Skyhawk SP' },
+  { match: '172R', icao: 'C172', name: 'Cessna 172R Skyhawk' },
+  { match: '172', icao: 'C172', name: 'Cessna 172' },  // Generic last
+];
+```
+
+#### Step 5: Add to aircraftTypeOrder
+
+Add the ICAO code where you want it to appear in the dropdown:
+
+```javascript
+const aircraftTypeOrder = [
+  // Existing types...
+  'C172',  // Add new type
+];
+```
+
+#### Step 6: Create or Update aircraftGroups (Optional)
+
+If adding multiple related types, create a group:
+
+```javascript
+const aircraftGroups = [
+  // Existing groups...
+  { id: 'cessna_piston', name: 'All Cessna Piston Singles', types: ['C152', 'C172', 'C182', 'C206', 'C207', 'C210'] },
+];
+```
+
+#### Step 7: Test
+
+Save the workflow and trigger a manual run:
+
+```bash
+curl -X POST https://your-domain.com/webhook/citation-monitor-run
+```
+
+Check the execution logs to verify incidents are being parsed and normalized correctly.
+
+---
+
+### Step-by-Step: Removing Aircraft
+
+To stop monitoring an aircraft type:
+
+#### Step 1: Remove from asnPagesToFetch
+
+```javascript
+const asnPagesToFetch = [
+  'C525', 'C25A', 'C25B', 'C25C', 'C25M',
+  // 'C500',  // Removed - no longer monitoring
+  'C501', 'C550', 'C551', 'S550', 'C560',
+];
+```
+
+#### Step 2: Remove from aircraftTypeOrder
+
+```javascript
+const aircraftTypeOrder = [
+  'C525', 'C25A', 'C25B', 'C25C', 'C25M',
+  // 'C500',  // Removed
+  'C501', 'C550', 'C551', 'S550', 'C560',
+];
+```
+
+#### Step 3: Update aircraftGroups
+
+Remove from any group's `types` array:
+
+```javascript
+{ id: 'ce500', name: 'All CE500 Aircraft', types: ['C501', 'C550', 'C551', 'S550', 'C560'] },  // C500 removed
+```
+
+#### Step 4: Keep or Remove Normalization Rules
+
+You can leave normalization rules in place (they won't match if you're not fetching that page) or remove them for cleanliness.
+
+**Important**: Existing database records are NOT deleted. The workflow follows a "never delete" philosophy. If you want to remove historical data, you must do so manually:
+
+```bash
+docker exec -it n8n_postgres psql -U n8n -d citation_accidents -c \
+  "DELETE FROM citation_incidents WHERE icao_code = 'C500';"
+```
+
+---
+
+### Complete Example: Cessna Piston Singles
+
+This example shows how to completely replace the Citation configuration with Cessna piston single-engine aircraft: 152, 172, 182, 206, 207, and 210.
+
+#### Step 1: Research ASN Pages
+
+First, verify each ICAO code exists on ASN:
+
+| Aircraft | ASN URL | ICAO Code |
+|----------|---------|-----------|  
+| Cessna 152 | https://aviation-safety.net/asndb/type/C152 | C152 |
+| Cessna 172 | https://aviation-safety.net/asndb/type/C172 | C172 |
+| Cessna 182 | https://aviation-safety.net/asndb/type/C182 | C182 |
+| Cessna 206 | https://aviation-safety.net/asndb/type/C206 | C206 |
+| Cessna 207 | https://aviation-safety.net/asndb/type/C207 | C207 |
+| Cessna 210 | https://aviation-safety.net/asndb/type/C210 | C210 |
+
+#### Step 2: Examine Variants on Each Page
+
+Visit each ASN page and note the different `aircraft_type` values you see. For example:
+
+**C152 page variants:**
+- Cessna 152
+- Cessna A152 Aerobat
+- Reims/Cessna F152
+- Reims/Cessna FA152 Aerobat
+
+**C172 page variants:**
+- Cessna 172, 172A through 172S
+- Cessna 172 Skyhawk
+- Cessna 172S Skyhawk SP
+- Reims/Cessna F172 variants
+- Cessna R172K Hawk XP
+
+**C182 page variants:**
+- Cessna 182, 182A through 182T
+- Cessna 182 Skylane
+- Cessna 182T Skylane
+- Reims/Cessna F182 variants
+- Cessna R182 Skylane RG
+- Cessna TR182 Turbo Skylane RG
+
+**C206 page variants:**
+- Cessna 206, U206, TU206
+- Cessna 206 Stationair
+- Cessna U206G Stationair
+- Cessna T206H Turbo Stationair
+
+**C207 page variants:**
+- Cessna 207, 207A
+- Cessna 207 Skywagon
+- Cessna 207A Stationair 7
+
+**C210 page variants:**
+- Cessna 210, 210A through 210N
+- Cessna 210 Centurion
+- Cessna T210 Turbo Centurion
+- Cessna P210 Pressurized Centurion
+
+#### Step 3: Complete Define Config Code
+
+Here is the complete configuration to replace in the Define Config node:
+
+```javascript
+// ============================================================
+// ASN PAGES TO FETCH
+// ============================================================
+const asnPagesToFetch = [
+  'C152',  // Cessna 152/Aerobat
+  'C172',  // Cessna 172 Skyhawk
+  'C182',  // Cessna 182 Skylane
+  'C206',  // Cessna 206 Stationair
+  'C207',  // Cessna 207 Skywagon/Stationair
+  'C210',  // Cessna 210 Centurion
+];
+
+// ============================================================
+// AIRCRAFT TYPE ORDER (for HTML dropdown display)
+// ============================================================
+const aircraftTypeOrder = [
+  'C152', 'C172', 'C182', 'C206', 'C207', 'C210'
+];
+
+// ============================================================
+// NORMALIZATION RULES
+// Checked IN ORDER - more specific matches FIRST
+// ============================================================
+const normalizationRules = [
+  // ---- Cessna 152 ----
+  { match: 'FA152', icao: 'C152', name: 'Cessna A152 Aerobat (Reims)' },
+  { match: 'F152', icao: 'C152', name: 'Cessna 152 (Reims)' },
+  { match: 'A152', icao: 'C152', name: 'Cessna A152 Aerobat' },
+  { match: '152', icao: 'C152', name: 'Cessna 152' },
+  
+  // ---- Cessna 172 ----
+  // Specific models first
+  { match: 'R172K', icao: 'C172', name: 'Cessna R172K Hawk XP' },
+  { match: 'FR172', icao: 'C172', name: 'Cessna FR172 (Reims)' },
+  { match: 'F172', icao: 'C172', name: 'Cessna F172 (Reims)' },
+  { match: '172S', icao: 'C172', name: 'Cessna 172S Skyhawk SP' },
+  { match: '172R', icao: 'C172', name: 'Cessna 172R Skyhawk' },
+  { match: '172P', icao: 'C172', name: 'Cessna 172P Skyhawk' },
+  { match: '172N', icao: 'C172', name: 'Cessna 172N Skyhawk' },
+  { match: '172M', icao: 'C172', name: 'Cessna 172M Skyhawk' },
+  { match: 'Skyhawk', icao: 'C172', name: 'Cessna 172 Skyhawk' },
+  { match: '172', icao: 'C172', name: 'Cessna 172' },
+  
+  // ---- Cessna 182 ----
+  // Retractable gear variants first
+  { match: 'TR182', icao: 'C182', name: 'Cessna TR182 Turbo Skylane RG' },
+  { match: 'R182', icao: 'C182', name: 'Cessna R182 Skylane RG' },
+  { match: 'FR182', icao: 'C182', name: 'Cessna FR182 (Reims)' },
+  { match: 'F182', icao: 'C182', name: 'Cessna F182 Skylane (Reims)' },
+  { match: '182T', icao: 'C182', name: 'Cessna 182T Skylane' },
+  { match: '182S', icao: 'C182', name: 'Cessna 182S Skylane' },
+  { match: 'Skylane', icao: 'C182', name: 'Cessna 182 Skylane' },
+  { match: '182', icao: 'C182', name: 'Cessna 182' },
+  
+  // ---- Cessna 206 ----
+  // Turbo variants first
+  { match: 'T206H', icao: 'C206', name: 'Cessna T206H Turbo Stationair' },
+  { match: 'TU206', icao: 'C206', name: 'Cessna TU206 Turbo Stationair' },
+  { match: 'T206', icao: 'C206', name: 'Cessna T206 Turbo Stationair' },
+  { match: 'U206G', icao: 'C206', name: 'Cessna U206G Stationair' },
+  { match: 'U206', icao: 'C206', name: 'Cessna U206 Stationair' },
+  { match: 'P206', icao: 'C206', name: 'Cessna P206 Super Skylane' },
+  { match: 'Stationair 6', icao: 'C206', name: 'Cessna 206 Stationair 6' },
+  { match: '206', icao: 'C206', name: 'Cessna 206' },
+  
+  // ---- Cessna 207 ----
+  { match: 'T207', icao: 'C207', name: 'Cessna T207 Turbo Skywagon' },
+  { match: '207A', icao: 'C207', name: 'Cessna 207A Stationair 7' },
+  { match: 'Stationair 7', icao: 'C207', name: 'Cessna 207 Stationair 7' },
+  { match: 'Skywagon 207', icao: 'C207', name: 'Cessna 207 Skywagon' },
+  { match: '207', icao: 'C207', name: 'Cessna 207' },
+  
+  // ---- Cessna 210 ----
+  // Pressurized and Turbo first
+  { match: 'P210', icao: 'C210', name: 'Cessna P210 Pressurized Centurion' },
+  { match: 'T210', icao: 'C210', name: 'Cessna T210 Turbo Centurion' },
+  { match: 'Centurion', icao: 'C210', name: 'Cessna 210 Centurion' },
+  { match: '210', icao: 'C210', name: 'Cessna 210' },
+];
+
+// ============================================================
+// AIRCRAFT GROUPS (for HTML dropdown)
+// ============================================================
+const aircraftGroups = [
+  { 
+    id: 'trainers', 
+    name: 'Training Aircraft (152/172)', 
+    types: ['C152', 'C172'] 
+  },
+  { 
+    id: 'skylane', 
+    name: 'All 182 Skylane', 
+    types: ['C182'] 
+  },
+  { 
+    id: 'utility', 
+    name: 'Utility Aircraft (206/207)', 
+    types: ['C206', 'C207'] 
+  },
+  { 
+    id: 'centurion', 
+    name: 'All 210 Centurion', 
+    types: ['C210'] 
+  },
+  { 
+    id: 'high_performance', 
+    name: 'High Performance (182/206/207/210)', 
+    types: ['C182', 'C206', 'C207', 'C210'] 
+  },
+];
+```
+
+#### Step 4: Update HTML Configuration (Optional)
+
+You may also want to update the `htmlConfig` object to reflect the new focus:
+
+```javascript
+const htmlConfig = {
+  background: './map_background.gif',
+  logo: './your_logo.png',
+  logoWidth: 260,
+  logoHeight: 200,
+  title: 'Cessna Piston Single Incidents and Accidents',
+  homeUrl: 'https://your-site.com',
+  quote: '"Flying is learning how to throw yourself at the ground and miss." — Douglas Adams'
+};
+```
+
+#### Step 5: Database Considerations
+
+If you are completely replacing the aircraft types (not adding to existing), you have two options:
+
+**Option A: Keep existing data (recommended)**
+
+The existing Citation data remains in the database but will not appear in the HTML dropdown since those ICAO codes are no longer in `aircraftTypeOrder`. The data is preserved for historical reference.
+
+**Option B: Clear existing data**
+
+If you want a fresh start, clear the database:
+
+```bash
+# CAUTION: This permanently deletes all incident data!
+docker exec -it n8n_postgres psql -U n8n -d citation_accidents -c \
+  "TRUNCATE TABLE citation_incidents RESTART IDENTITY;"
+```
+
+#### Step 6: Test the Configuration
+
+After making changes:
+
+1. Save the workflow
+2. Run a manual test:
+   ```bash
+   curl -X POST https://your-domain.com/webhook/citation-monitor-run
+   ```
+3. Check the n8n execution log for:
+   - Number of pages fetched (should be 6 pages x 3 pagination = 18 URLs)
+   - Number of incidents parsed
+   - Any normalization warnings
+4. View the generated HTML dashboard
+5. Verify the dropdown contains your new groups and aircraft types
+
+#### Configuration Summary
+
+| Array | Entries | Purpose |
+|-------|---------|--------|
+| `asnPagesToFetch` | 6 ICAO codes | URLs to scrape |
+| `aircraftTypeOrder` | 6 ICAO codes | Dropdown sort order |
+| `normalizationRules` | 32 rules | Type text to ICAO mapping |
+| `aircraftGroups` | 5 groups | Dropdown group filters |
+
+This configuration will monitor approximately 2,000+ incidents across these popular Cessna piston singles, depending on the ASN database size at the time of collection.
 
 ---
 
