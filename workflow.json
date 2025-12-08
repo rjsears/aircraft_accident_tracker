@@ -1,0 +1,2307 @@
+{
+  "name": "Citation Accident Monitor v2 (ASN)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "5a79dc6a-0159-451b-a0d7-7917660456b0",
+      "name": "Daily 8 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2688,
+        -928
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "d998172c-faa0-4d3e-8dd9-bfaa856201c9",
+      "name": "Fetch ASN Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1408,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst allIncidents = [];\n\n// Get normalization rules from Define Config\nlet normalizationRules = [];\ntry {\n  normalizationRules = $('Define Config').first().json._normalizationRules || [];\n} catch (e) {\n  console.log('Could not load normalization rules');\n}\n\n// Normalize aircraft type using rules from config\nconst normalizeAircraftType = (aircraftType) => {\n  const text = aircraftType || '';\n  const upper = text.toUpperCase();\n  \n  for (const rule of normalizationRules) {\n    if (upper.includes(rule.match.toUpperCase())) {\n      return { icao: rule.icao, name: rule.name };\n    }\n  }\n  return null;\n};\n\n// ============================================================\n// LOCATION NORMALIZATION - Convert metric to imperial\n// ============================================================\nconst normalizeLocation = (location) => {\n  if (!location) return location;\n  const kmPattern = /(\\d+[,.]?\\d*)\\s*km\\b/gi;\n  const mPattern = /(\\d+[,.]?\\d*)\\s*m\\b(?!i|ph|ar|in|on)/gi;\n  let normalized = location;\n  normalized = normalized.replace(kmPattern, (match, numStr) => {\n    const num = parseFloat(numStr.replace(',', '.'));\n    if (isNaN(num)) return match;\n    if (num < 0.5) {\n      const feet = Math.round(num * 3280.84);\n      return `${feet} ft`;\n    } else {\n      const miles = (num * 0.621371).toFixed(1);\n      return `${miles} mi`;\n    }\n  });\n  normalized = normalized.replace(mPattern, (match, numStr) => {\n    const num = parseFloat(numStr.replace(',', '.'));\n    if (isNaN(num)) return match;\n    const feet = Math.round(num * 3.28084);\n    return `${feet} ft`;\n  });\n  return normalized;\n};\n\nfor (let idx = 0; idx < items.length; idx++) {\n  const item = items[idx];\n  const html = item.json.data || '';\n  let pageIcao = 'UNKNOWN';\n  try {\n    const configItems = $('Define Config').all();\n    if (configItems[idx]) {\n      pageIcao = configItems[idx].json.icao || 'UNKNOWN';\n    }\n  } catch (e) {}\n  if (!html || html.length < 100) continue;\n  const rowMatches = html.match(/<tr[^>]*>[\\s\\S]*?<\\/tr>/gi) || [];\n  for (const row of rowMatches) {\n    if (row.includes('<th') || row.includes('acc. date')) continue;\n    const cellMatches = row.match(/<td[^>]*>[\\s\\S]*?<\\/td>/gi) || [];\n    if (cellMatches.length < 6) continue;\n    const clean = (str) => str.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\\s+/g, ' ').trim();\n    const dateStr = clean(cellMatches[0]);\n    if (!dateStr || dateStr.includes('acc. date')) continue;\n    if (dateStr.includes('UTC') || dateStr.includes('AM') || dateStr.includes('PM') || dateStr.includes(',')) continue;\n    const aircraftType = clean(cellMatches[1]);\n    const registration = clean(cellMatches[2]);\n    const operator = clean(cellMatches[3]);\n    const fatalities = clean(cellMatches[4]);\n    const locationRaw = clean(cellMatches[5]);\n    const location = normalizeLocation(locationRaw);\n    const damage = cellMatches[7] ? clean(cellMatches[7]) : '';\n    if (!registration || registration.length < 2) continue;\n    if (location === 'Unknown' && !operator && !aircraftType) continue;\n    let icao = pageIcao;\n    let aircraftName = pageIcao;\n    const normalized = normalizeAircraftType(aircraftType);\n    if (normalized) {\n      icao = normalized.icao;\n      aircraftName = normalized.name;\n    }\n    let sourceUrl = '';\n    const wikibaseMatch = row.match(/\\/wikibase\\/(\\d+)/i);\n    if (wikibaseMatch && wikibaseMatch[1]) {\n      sourceUrl = 'https://aviation-safety.net/wikibase/' + wikibaseMatch[1];\n    }\n    if (!sourceUrl) {\n      const recordMatch = row.match(/\\/database\\/record\\.php\\?id=([^\"'&]+)/i);\n      if (recordMatch && recordMatch[1]) {\n        sourceUrl = 'https://aviation-safety.net/database/record.php?id=' + recordMatch[1];\n      }\n    }\n    let incidentDate = null;\n    if (dateStr && !dateStr.includes('unk') && !dateStr.includes('xx')) {\n      try {\n        const parsed = new Date(dateStr);\n        if (!isNaN(parsed.getTime())) incidentDate = parsed.toISOString().split('T')[0];\n      } catch (e) {}\n    }\n    let severity = 'Unknown';\n    const dmg = damage.toLowerCase();\n    if (dmg === 'w/o') severity = 'Fatal/Destroyed';\n    else if (dmg === 'sub') severity = 'Substantial';\n    else if (dmg === 'min') severity = 'Minor';\n    else if (dmg === 'non') severity = 'None';\n    let fatalCount = 0;\n    if (fatalities) {\n      for (const p of fatalities.split('+')) fatalCount += parseInt(p) || 0;\n    }\n    allIncidents.push({ json: {\n      icao_code: icao, aircraft_name: aircraftName, aircraft_type: aircraftType,\n      registration, operator, incident_date: incidentDate, date_string: dateStr,\n      location, fatalities: fatalCount, fatalities_raw: fatalities, damage, severity,\n      source_url: sourceUrl, source: 'Aviation Safety Network'\n    }});\n  }\n}\nif (allIncidents.length === 0) return [{ json: { _empty: true, message: 'No incidents found' } }];\nlet testingMode = false;\nlet testLimit = 50;\ntry {\n  testingMode = $('Define Config').first().json._testingMode || false;\n  testLimit = $('Define Config').first().json._testLimit || 50;\n} catch (e) {}\nif (testingMode && allIncidents.length > testLimit) {\n  console.log(`TESTING MODE: Limiting from ${allIncidents.length} to ${testLimit} incidents`);\n  return allIncidents.slice(0, testLimit);\n}\nreturn allIncidents;"
+      },
+      "id": "1219a137-5a0e-4fe8-b992-06eaceb8b951",
+      "name": "Parse ASN Table",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "all_incidents",
+        "include": "allFieldsExcept",
+        "options": {}
+      },
+      "id": "504e58ac-1411-40c3-bdf2-fa440f620d3d",
+      "name": "Merge All Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten all incidents from all aircraft types\n// IMPORTANT: Strip additional_links to prevent overwriting Google search links\nconst allIncidents = [];\n\nfor (const item of $input.all()) {\n  if (item.json.all_incidents && Array.isArray(item.json.all_incidents)) {\n    // Filter out empty placeholders\n    const validIncidents = item.json.all_incidents.filter(inc => !inc._empty);\n    allIncidents.push(...validIncidents);\n  } else if (item.json.icao_code && !item.json._empty) {\n    // Individual incident (not empty)\n    allIncidents.push(item.json);\n  }\n}\n\n// Sort by date (newest first)\nallIncidents.sort((a, b) => {\n  if (!a.incident_date) return 1;\n  if (!b.incident_date) return -1;\n  return new Date(b.incident_date) - new Date(a.incident_date);\n});\n\n// Add is_new flag for incidents in last 30 days\nconst thirtyDaysAgo = new Date();\nthirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);\n\nconst result = allIncidents.map(inc => {\n  // CRITICAL: Remove additional_links from upsert data\n  // This prevents ASN-only links from overwriting Google search links\n  // ASN links are merged separately via Update Narrative in DB\n  const { additional_links, ...incWithoutLinks } = inc;\n  \n  return {\n    ...incWithoutLinks,\n    is_new: inc.incident_date ? new Date(inc.incident_date) > thirtyDaysAgo : false\n  };\n});\n\nconsole.log(`Total incidents after flattening: ${result.length} (additional_links stripped for upsert)`);\n\nreturn result.map(inc => ({ json: inc }));"
+      },
+      "id": "59df9ffb-5296-4b31-96a1-71b90c41e71d",
+      "name": "Flatten Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": "citation_incidents"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "registration",
+            "date_string"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "registration",
+              "displayName": "registration",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "date_string",
+              "displayName": "date_string",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "incident_date",
+              "displayName": "incident_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "icao_code",
+              "displayName": "icao_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "aircraft_name",
+              "displayName": "aircraft_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "aircraft_type",
+              "displayName": "aircraft_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "operator",
+              "displayName": "operator",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "fatalities",
+              "displayName": "fatalities",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "fatalities_raw",
+              "displayName": "fatalities_raw",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "damage",
+              "displayName": "damage",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "severity",
+              "displayName": "severity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "synopsis",
+              "displayName": "synopsis",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "raw_narrative",
+              "displayName": "raw_narrative",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "raw_narrative_hash",
+              "displayName": "raw_narrative_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "narrative_summary",
+              "displayName": "narrative_summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "additional_links",
+              "displayName": "additional_links",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "is_new",
+              "displayName": "is_new",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            },
+            {
+              "id": "serpapi_searched_at",
+              "displayName": "serpapi_searched_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "f69cd05b-3f82-4a10-b1fc-d2450fa8eaad",
+      "name": "Upsert Incidents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        208,
+        -1280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM citation_incidents ORDER BY incident_date DESC NULLS LAST, created_at DESC",
+        "options": {}
+      },
+      "id": "5391e197-a3f4-4755-93b6-7dd65e69f402",
+      "name": "Query All Incidents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        544,
+        -1280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const incidents = $input.all().map(item => item.json);\n\n// Get ALL config from Define Config\nconst config = $('Define Config').first().json;\nconst aircraftGroups = config._aircraftGroups || [];\nconst aircraftTypeOrder = config._aircraftTypeOrder || [];\nconst htmlConfig = config._htmlConfig || {};\n\n// HTML config with defaults\nconst background = htmlConfig.background || './map_background.gif';\nconst logo = htmlConfig.logo || './logo.png';\nconst logoWidth = htmlConfig.logoWidth || 260;\nconst logoHeight = htmlConfig.logoHeight || 200;\nconst pageTitle = htmlConfig.title || 'Aircraft Incidents and Accidents';\nconst homeUrl = htmlConfig.homeUrl || 'https://example.com';\nconst quote = htmlConfig.quote || '\"Those who cannot remember the past are condemned to repeat it.\" \u2014 George Santayana';\n\n// Get unique aircraft types that exist in our data\nconst existingTypes = [...new Set(incidents.map(i => i.icao_code).filter(Boolean))];\n\n// Sort by our defined order (unknown types go at the end)\nconst sortedTypes = existingTypes.sort((a, b) => {\n  const indexA = aircraftTypeOrder.indexOf(a);\n  const indexB = aircraftTypeOrder.indexOf(b);\n  if (indexA === -1 && indexB === -1) return a.localeCompare(b);\n  if (indexA === -1) return 1;\n  if (indexB === -1) return -1;\n  return indexA - indexB;\n});\n\n// Build dropdown options\nlet aircraftOptions = '\\n<option value=\"\" disabled selected>-- Select an Aircraft --</option>\\n<option value=\"all\">All Aircraft</option>';\n\naircraftGroups.forEach(group => {\n  aircraftOptions += `\\n<option value=\"${group.id}\">${group.name}</option>`;\n});\n\naircraftOptions += '\\n<option disabled>\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500</option>';\n\n// Add individual types in correct order\nsortedTypes.forEach(code => {\n  const sample = incidents.find(i => i.icao_code === code);\n  const name = sample ? sample.aircraft_name : code;\n  aircraftOptions += `\\n<option value=\"${code}\">${code} - ${name}</option>`;\n});\n\n// Build JavaScript group definitions from config\nconst jsGroupDefs = aircraftGroups.map(g => \n  `const ${g.id}Types = ${JSON.stringify(g.types)};`\n).join('\\n    ');\n\n// Build JavaScript filter logic from config\nconst jsFilterLogic = aircraftGroups.map(g => \n  `else if (aircraft === '${g.id}') { allowedTypes = ${g.id}Types; }`\n).join(' ');\n\nconst generateLinksSection = (inc) => {\n  let additionalLinks = inc.additional_links || [];\n  if (typeof additionalLinks === 'string') {\n    try { additionalLinks = JSON.parse(additionalLinks); } catch(e) { additionalLinks = []; }\n  }\n  if (!additionalLinks || additionalLinks.length === 0) return '';\n  const grouped = {};\n  for (const link of additionalLinks) {\n    const type = link.source_type || 'other';\n    if (!grouped[type]) grouped[type] = [];\n    grouped[type].push(link);\n  }\n  // UPDATED: All news types use 'NEWS' label, ATC uses 'ATC'\n  const typeLabels = { ntsb: 'NTSB', faa: 'FAA', asn: 'ASN', tsb_canada: 'TSB Canada', kathryns_report: 'Kathryns Report', avherald: 'Aviation Herald', major_news: 'NEWS', tv_affiliate: 'NEWS', news: 'NEWS', atc: 'LIVE ATC', video: 'Video', photo: 'Photos', flight_tracking: 'Flight Tracking', other: 'Other' };\n  const typeOrder = ['ntsb', 'faa', 'asn', 'tsb_canada', 'kathryns_report', 'avherald', 'major_news', 'tv_affiliate', 'news', 'atc', 'video', 'flight_tracking', 'photo', 'other'];\n  let linksHtml = '<div class=\"additional-links\"><h4>Additional Resources</h4><div class=\"links-grid\">';\n  for (const type of typeOrder) {\n    if (grouped[type] && grouped[type].length > 0) {\n      for (const link of grouped[type]) {\n        const linkTitle = (link.title || link.domain || 'View').substring(0, 40);\n        linksHtml += `<a href=\"${link.url}\" target=\"_blank\" class=\"resource-link\" title=\"${linkTitle}\"><span class=\"link-type\">${typeLabels[type] || type}</span>${linkTitle}</a>`;\n      }\n    }\n  }\n  linksHtml += '</div></div>';\n  return linksHtml;\n};\n\nconst tableRows = incidents.map(inc => {\n  const isNew = inc.is_new ? 'new-incident' : '';\n  const hasFatalities = inc.fatalities > 0 ? 'has-fatalities' : '';\n  let severityClass = 'severity-unknown';\n  if (inc.fatalities > 0 || inc.damage === 'w/o') severityClass = 'severity-fatal';\n  else if (inc.damage === 'sub') severityClass = 'severity-serious';\n  else if (inc.damage === 'min') severityClass = 'severity-minor';\n  else if (inc.damage === 'non') severityClass = 'severity-none';\n  const dateDisplay = inc.date_string || inc.incident_date || 'Unknown';\n  const fatalDisplay = inc.fatalities > 0 ? inc.fatalities : (inc.fatalities_raw || '0');\n  const asnLink = inc.source_url || '';\n  const hasValidAsnLink = asnLink && asnLink.includes('wikibase/') && /\\/\\d+$/.test(asnLink);\n  const narrative = inc.narrative_summary || '';\n  const hasNarrative = narrative && narrative.length > 20;\n  \n  const searchText = [\n    inc.location || '',\n    inc.operator || '',\n    inc.aircraft_type || '',\n    inc.aircraft_name || '',\n    narrative\n  ].join(' ').toLowerCase().replace(/'/g, '');\n  \n  return `\n    <tr class=\"incident-row ${isNew} ${hasFatalities}\" \n        data-icao=\"${inc.icao_code || ''}\" \n        data-reg=\"${(inc.registration || '').toUpperCase()}\"\n        data-date=\"${inc.incident_date || ''}\" \n        data-fatalities=\"${inc.fatalities || 0}\"\n        data-search=\"${searchText.replace(/\"/g, '')}\"\n        style=\"display: none;\"\n        onclick=\"toggleDetails(this)\">\n      <td class=\"expand-cell\"><span class=\"expand-arrow\">&#9654;</span></td>\n      <td>${inc.icao_code || ''}</td>\n      <td>${inc.registration || ''}</td>\n      <td>${dateDisplay}</td>\n      <td>${inc.location || ''}</td>\n      <td class=\"fatalities-cell\">${fatalDisplay}</td>\n      <td><span class=\"severity-badge ${severityClass}\">${inc.severity || 'Unknown'}</span></td>\n    </tr>\n    <tr class=\"details-row\" style=\"display: none;\">\n      <td colspan=\"7\">\n        <div class=\"details-content\">\n          <div class=\"details-grid\">\n            <div class=\"details-info\">\n              <p><strong>Aircraft:</strong> ${inc.aircraft_type || inc.aircraft_name || ''}</p>\n              <p><strong>Operator:</strong> ${inc.operator || 'Unknown'}</p>\n              <p><strong>Damage:</strong> ${inc.damage || 'Unknown'}</p>\n              ${hasValidAsnLink ? `<p><a href=\"${asnLink}\" target=\"_blank\" class=\"view-link\">View on Aviation Safety Network</a></p>` : ''}\n            </div>\n            ${hasNarrative ? `<div class=\"details-narrative\"><h4>Incident Summary</h4><p>${narrative}</p></div>` : ''}\n          </div>\n          ${generateLinksSection(inc)}\n        </div>\n      </td>\n    </tr>`;\n}).join('');\n\nconst html = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>${pageTitle}</title>\n  <style>\n    * { margin: 0; padding: 0; box-sizing: border-box; }\n    body { font-family: Arial, Helvetica, sans-serif; background: url('${background}') repeat; min-height: 100vh; color: #333; }\n    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }\n    .header { text-align: center; padding: 20px; margin-bottom: 10px; }\n    .header img { width: ${logoWidth}px; height: ${logoHeight}px; margin-bottom: 10px; }\n    .header h1 { font-size: 24px; color: #333; margin-bottom: 5px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .header p { color: #555; font-size: 14px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .stats-bar { display: flex; justify-content: center; gap: 40px; padding: 15px; margin-bottom: 15px; flex-wrap: wrap; }\n    .stat-item { text-align: center; padding: 10px 20px; }\n    .stat-value { font-size: 28px; font-weight: bold; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .stat-value.total { color: #333; }\n    .stat-value.fatal { color: #dc2626; }\n    .stat-value.fatalities { color: #ea580c; }\n    .stat-value.recent { color: #16a34a; }\n    .stat-label { font-size: 11px; color: #555; text-transform: uppercase; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .filters { display: flex; gap: 15px; padding: 15px 20px; background: rgba(255,255,255,0.95); border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); flex-wrap: wrap; align-items: center; }\n    .filter-group { display: flex; flex-direction: column; gap: 5px; }\n    .filter-group label { font-size: 11px; color: #666; text-transform: uppercase; }\n    .filter-group select, .filter-group input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; min-width: 140px; }\n    .filter-group input[type=\"text\"].tail-input { text-transform: uppercase; }\n    .filter-group select:disabled, .filter-group input:disabled { background: #e5e5e5; color: #999; cursor: not-allowed; }\n    .filter-group.disabled label { color: #999; }\n    .btn { padding: 10px 20px; background: #75787B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }\n    .btn:hover { background: #FE5000; }\n    .table-container { background: rgba(255,255,255,0.98); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }\n    .select-prompt { text-align: center; padding: 60px 20px; color: #666; font-size: 16px; }\n    table { width: 100%; border-collapse: collapse; }\n    thead { background: #75787B; color: white; }\n    th { padding: 12px 15px; text-align: left; font-weight: 600; font-size: 13px; text-transform: uppercase; }\n    th:first-child { width: 40px; }\n    .incident-row { cursor: pointer; transition: background 0.2s; }\n    .incident-row:hover { background: #f5f5f5; }\n    .incident-row.new-incident { background: #e8f5e9; }\n    .incident-row.new-incident:hover { background: #c8e6c9; }\n    .incident-row.has-fatalities { border-left: 4px solid #dc2626; }\n    td { padding: 12px 15px; border-bottom: 1px solid #eee; font-size: 14px; }\n    .expand-cell { text-align: center; }\n    .expand-arrow { display: inline-block; transition: transform 0.2s; color: #666; }\n    .incident-row.expanded .expand-arrow { transform: rotate(90deg); }\n    .fatalities-cell { font-weight: bold; color: #dc2626; }\n    .severity-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }\n    .severity-fatal { background: #fecaca; color: #dc2626; }\n    .severity-serious { background: #fed7aa; color: #ea580c; }\n    .severity-minor { background: #fef08a; color: #ca8a04; }\n    .severity-none { background: #d1fae5; color: #16a34a; }\n    .severity-unknown { background: #e5e7eb; color: #6b7280; }\n    .details-row td { padding: 0; background: #fafafa; }\n    .details-content { padding: 20px 30px; border-left: 4px solid #FE5000; }\n    .details-grid { display: grid; grid-template-columns: 280px 1fr; gap: 20px; margin-bottom: 15px; }\n    .details-info p { margin-bottom: 8px; font-size: 14px; }\n    .details-narrative { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 15px; }\n    .details-narrative h4 { font-size: 13px; color: #0369a1; margin-bottom: 8px; text-transform: uppercase; }\n    .details-narrative p { font-size: 14px; line-height: 1.6; color: #334155; }\n    .view-link { color: #FE5000; text-decoration: none; font-weight: 600; }\n    .view-link:hover { text-decoration: underline; }\n    .additional-links { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; }\n    .additional-links h4 { font-size: 13px; color: #333; margin-bottom: 12px; text-transform: uppercase; }\n    .links-grid { display: flex; flex-wrap: wrap; gap: 8px; }\n    .resource-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; color: #334155; text-decoration: none; font-size: 13px; transition: all 0.2s; }\n    .resource-link:hover { background: #e0f2fe; border-color: #7dd3fc; color: #0369a1; }\n    .link-type { font-size: 10px; font-weight: 600; color: #64748b; text-transform: uppercase; padding: 2px 6px; background: #e2e8f0; border-radius: 3px; margin-right: 4px; }\n    .back-btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: #75787B; color: white; text-decoration: none; border-radius: 4px; transition: background 0.2s; }\n    .back-btn:hover { background: #FE5000; }\n    .footer { text-align: center; padding: 20px; color: #555; font-size: 12px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    @media (max-width: 900px) { .details-grid { grid-template-columns: 1fr; } }\n    @media (max-width: 768px) { .stats-bar { gap: 15px; } .filters { flex-direction: column; } .filter-group { width: 100%; } .filter-group select, .filter-group input { width: 100%; } table { font-size: 12px; } th, td { padding: 8px; } }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"header\">\n      <img src=\"${logo}\" alt=\"Logo\" width=\"${logoWidth}\" height=\"${logoHeight}\">\n      <h1>${pageTitle}</h1>\n      <p>Data sourced from Aviation Safety Network | Updated: ${new Date().toLocaleDateString()}</p>\n      <p style=\"font-size: 16px; font-style: italic; font-weight: bold; margin: 20px 0 5px 0; color: #444; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); text-align: center;\">${quote}</p>\n    </div>\n    <div class=\"stats-bar\">\n      <div class=\"stat-item\"><div class=\"stat-value total\" id=\"stat-total\">0</div><div class=\"stat-label\">Total Incidents</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value fatal\" id=\"stat-fatal\">0</div><div class=\"stat-label\">Fatal Incidents</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value fatalities\" id=\"stat-fatalities\">0</div><div class=\"stat-label\">Total Fatalities</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value recent\" id=\"stat-recent\">0</div><div class=\"stat-label\">Last 30 Days</div></div>\n    </div>\n    <div class=\"filters\">\n      <div class=\"filter-group\" id=\"aircraft-group\"><label>Aircraft Type</label><select id=\"filter-aircraft\" onchange=\"applyFilters()\">${aircraftOptions}</select></div>\n      <div class=\"filter-group\"><label>Tail #</label><input type=\"text\" id=\"filter-registration\" class=\"tail-input\" placeholder=\"e.g. N123AB\" oninput=\"handleTailInput()\"></div>\n      <div class=\"filter-group\"><label>Keyword</label><input type=\"text\" id=\"filter-keyword\" placeholder=\"Location, operator...\" oninput=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"date-from-group\"><label>Date From</label><input type=\"date\" id=\"filter-date-from\" onchange=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"date-to-group\"><label>Date To</label><input type=\"date\" id=\"filter-date-to\" onchange=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"fatal-group\"><label>Show</label><select id=\"filter-fatal\" onchange=\"applyFilters()\"><option value=\"all\">All Incidents</option><option value=\"fatal\">Fatal Only</option></select></div>\n      <button class=\"btn\" onclick=\"clearFilters()\">Clear Filters</button>\n    </div>\n    <div class=\"table-container\">\n      <div id=\"select-prompt\" class=\"select-prompt\">Please select an aircraft type or enter a tail number to view incidents</div>\n      <table id=\"incidents-table-wrapper\" style=\"display: none;\">\n        <thead><tr><th></th><th>Type</th><th>Registration</th><th>Date</th><th>Location</th><th>Fatal</th><th>Severity</th></tr></thead>\n        <tbody id=\"incidents-table\">${tableRows}</tbody>\n      </table>\n    </div>\n    <div class=\"footer\">\n      <a href=\"${homeUrl}\" class=\"back-btn\">Home</a>\n      <p style=\"margin-top: 20px;\">Data from Aviation Safety Network. Click any row to view details. For training purposes only.</p>\n    </div>\n  </div>\n  <script>\n    ${jsGroupDefs}\n    function toggleDetails(row) { const detailsRow = row.nextElementSibling; const isExpanded = row.classList.contains('expanded'); document.querySelectorAll('.incident-row.expanded').forEach(r => { if (r !== row) { r.classList.remove('expanded'); r.nextElementSibling.style.display = 'none'; } }); if (isExpanded) { row.classList.remove('expanded'); detailsRow.style.display = 'none'; } else { row.classList.add('expanded'); detailsRow.style.display = 'table-row'; } }\n    function updateStats() { const visibleRows = document.querySelectorAll('.incident-row:not([style*=\"display: none\"])'); let totalCount = 0, fatalCount = 0, fatalitiesSum = 0, recentCount = 0; const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30); visibleRows.forEach(row => { totalCount++; const fatalities = parseInt(row.dataset.fatalities) || 0; if (fatalities > 0) { fatalCount++; fatalitiesSum += fatalities; } const dateStr = row.dataset.date; if (dateStr) { const incDate = new Date(dateStr); if (incDate > thirtyDaysAgo) recentCount++; } }); document.getElementById('stat-total').textContent = totalCount; document.getElementById('stat-fatal').textContent = fatalCount; document.getElementById('stat-fatalities').textContent = fatalitiesSum; document.getElementById('stat-recent').textContent = recentCount; }\n    function handleTailInput() { const regSearch = document.getElementById('filter-registration').value.trim(); const aircraftGroup = document.getElementById('aircraft-group'); const aircraftSelect = document.getElementById('filter-aircraft'); const dateFromGroup = document.getElementById('date-from-group'); const dateToGroup = document.getElementById('date-to-group'); const fatalGroup = document.getElementById('fatal-group'); const dateFrom = document.getElementById('filter-date-from'); const dateTo = document.getElementById('filter-date-to'); const fatalSelect = document.getElementById('filter-fatal'); const keywordInput = document.getElementById('filter-keyword'); if (regSearch.length > 0) { aircraftGroup.classList.add('disabled'); aircraftSelect.disabled = true; dateFromGroup.classList.add('disabled'); dateToGroup.classList.add('disabled'); fatalGroup.classList.add('disabled'); dateFrom.disabled = true; dateTo.disabled = true; fatalSelect.disabled = true; keywordInput.disabled = true; keywordInput.parentElement.classList.add('disabled'); aircraftSelect.selectedIndex = 0; dateFrom.value = ''; dateTo.value = ''; fatalSelect.value = 'all'; keywordInput.value = ''; } else { aircraftGroup.classList.remove('disabled'); aircraftSelect.disabled = false; dateFromGroup.classList.remove('disabled'); dateToGroup.classList.remove('disabled'); fatalGroup.classList.remove('disabled'); dateFrom.disabled = false; dateTo.disabled = false; fatalSelect.disabled = false; keywordInput.disabled = false; keywordInput.parentElement.classList.remove('disabled'); } applyFilters(); }\n    function applyFilters() { const aircraft = document.getElementById('filter-aircraft').value; const regSearch = document.getElementById('filter-registration').value.toUpperCase().trim(); const keyword = document.getElementById('filter-keyword').value.toLowerCase().trim(); const dateFrom = document.getElementById('filter-date-from').value; const dateTo = document.getElementById('filter-date-to').value; const fatalOnly = document.getElementById('filter-fatal').value === 'fatal'; const prompt = document.getElementById('select-prompt'); const table = document.getElementById('incidents-table-wrapper'); if (regSearch.length > 0) { prompt.style.display = 'none'; table.style.display = 'table'; } else if (!aircraft) { prompt.style.display = 'block'; table.style.display = 'none'; document.getElementById('stat-total').textContent = '0'; document.getElementById('stat-fatal').textContent = '0'; document.getElementById('stat-fatalities').textContent = '0'; document.getElementById('stat-recent').textContent = '0'; return; } else { prompt.style.display = 'none'; table.style.display = 'table'; } let allowedTypes = []; if (aircraft === 'all' || regSearch.length > 0) { allowedTypes = null; } ${jsFilterLogic} else { allowedTypes = [aircraft]; } document.querySelectorAll('.incident-row').forEach(row => { const icao = row.dataset.icao, reg = row.dataset.reg, date = row.dataset.date, searchText = row.dataset.search || ''; const fatalities = parseInt(row.dataset.fatalities) || 0; let show = true; if (regSearch.length > 0) { if (!reg.includes(regSearch)) show = false; } else { if (allowedTypes !== null && !allowedTypes.includes(icao)) show = false; if (keyword && !searchText.includes(keyword)) show = false; if (dateFrom && date && date < dateFrom) show = false; if (dateTo && date && date > dateTo) show = false; if (fatalOnly && fatalities === 0) show = false; } row.style.display = show ? '' : 'none'; row.nextElementSibling.style.display = 'none'; row.classList.remove('expanded'); }); updateStats(); }\n    function clearFilters() { document.getElementById('filter-aircraft').selectedIndex = 0; document.getElementById('filter-registration').value = ''; document.getElementById('filter-keyword').value = ''; document.getElementById('filter-date-from').value = ''; document.getElementById('filter-date-to').value = ''; document.getElementById('filter-fatal').value = 'all'; document.getElementById('aircraft-group').classList.remove('disabled'); document.getElementById('filter-aircraft').disabled = false; document.getElementById('date-from-group').classList.remove('disabled'); document.getElementById('date-to-group').classList.remove('disabled'); document.getElementById('fatal-group').classList.remove('disabled'); document.getElementById('filter-date-from').disabled = false; document.getElementById('filter-date-to').disabled = false; document.getElementById('filter-fatal').disabled = false; document.getElementById('filter-keyword').disabled = false; document.getElementById('filter-keyword').parentElement.classList.remove('disabled'); applyFilters(); }\n  </script>\n</body>\n</html>`;\n\nconst binaryData = Buffer.from(html, 'utf8').toString('base64');\nreturn [{ json: { success: true, size: html.length }, binary: { data: { data: binaryData, mimeType: 'text/html', fileName: 'index.html' } } }];"
+      },
+      "id": "0139f864-bbad-4ce8-a75a-799cf1be5a01",
+      "name": "Generate HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/n8n/accident_results/index.html",
+        "options": {}
+      },
+      "id": "f7cb0d7f-9cf5-4a37-b3df-27592cab2dfe",
+      "name": "Write HTML File",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        848,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SERPAPI LIMIT CONFIGURATION\n// ============================================================\n// Adjust this value based on your SerpAPI plan:\n// - Free tier (250/month): Use 8 per run\n// - Developer plan (5,000/month): Use up to 1000 per run\n// - Set to 0 to disable SerpAPI enrichment entirely\nconst SERPAPI_LIMIT = 1000;\n// ============================================================\n\n// Query incidents from the database - handle multiple flow paths\nlet incidents = [];\n\ntry {\n  // Main workflow path - try to get from Query All Incidents\n  const queryOutput = $('Query All Incidents').all();\n  incidents = queryOutput.map(item => item.json);\n  console.log(`Filter For Enrichment: Got ${incidents.length} from Query All Incidents`);\n} catch(e) {\n  // Manual AI path - Query All Incidents doesn't exist\n  // Query database directly instead of skipping\n  console.log('Filter For Enrichment: Query All Incidents not available, will query from upstream data');\n  \n  // Try to get from Query Final Data (used in manual paths)\n  try {\n    const finalData = $('Query Final Data').all();\n    incidents = finalData.map(item => item.json);\n    console.log(`Filter For Enrichment: Got ${incidents.length} from Query Final Data`);\n  } catch(e2) {\n    // Try Query AI Candidates as last resort\n    try {\n      const aiCandidates = $('Query AI Candidates').all();\n      incidents = aiCandidates.map(item => item.json);\n      console.log(`Filter For Enrichment: Got ${incidents.length} from Query AI Candidates`);\n    } catch(e3) {\n      console.log('Filter For Enrichment: No upstream data available, skipping enrichment');\n      return [{ json: { skip: true, message: 'No upstream data available for enrichment' } }];\n    }\n  }\n}\n\n// Filter: Fatal, destroyed, or substantial damage incidents without Google-sourced links\nconst needsEnrichment = incidents.filter(inc => {\n  const hasFatalities = inc.fatalities > 0;\n  const isDestroyed = inc.damage === 'w/o';\n  const isSubstantial = inc.damage === 'sub';\n  \n  // Only search for significant incidents\n  if ((!hasFatalities && !isDestroyed && !isSubstantial) || !inc.registration) return false;\n  \n  let existingLinks = inc.additional_links || [];\n  if (typeof existingLinks === 'string') {\n    try { existingLinks = JSON.parse(existingLinks); } catch(e) { existingLinks = []; }\n  }\n  \n  // Check for Google-sourced links (not from ASN page or auto-generated)\n  const hasGoogleLinks = existingLinks.some(l => {\n    const src = l.source || '';\n    return src !== '' && src !== 'asn_page' && src !== 'auto_generated';\n  });\n  \n  return !hasGoogleLinks;\n});\n\n// Apply configured limit (set SERPAPI_LIMIT at top of script)\nconst toProcess = SERPAPI_LIMIT > 0 ? needsEnrichment.slice(0, SERPAPI_LIMIT) : [];\nconsole.log(`Enrichment: ${needsEnrichment.length} incidents need Google links, processing ${toProcess.length} (limit: ${SERPAPI_LIMIT})`);\n\nif (toProcess.length === 0) {\n  return [{ json: { skip: true, message: SERPAPI_LIMIT === 0 ? 'SerpAPI enrichment disabled (limit=0)' : 'No incidents need enrichment' } }];\n}\n\nreturn toProcess.map(inc => ({ json: inc }));"
+      },
+      "id": "bb6630e5-b02a-4226-84eb-f4a3be8cddb6",
+      "name": "Filter For Enrichment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1264,
+        -976
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "69f3f964-c9e6-47d9-8d29-23e5eae96eb7",
+      "name": "Check If Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1088,
+        -976
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Search Results - Process ALL items together to ensure proper pairing\nconst searchResults = $input.all();\n\n// Get original incident data - handle both main workflow and manual SerpAPI paths\nlet allIncidents = [];\ntry {\n  // Manual SerpAPI webhook path\n  allIncidents = $('Filter SerpAPI Candidates').all();\n} catch(e) {\n  try {\n    // Main workflow path (via Filter For Enrichment)\n    allIncidents = $('Filter For Enrichment').all();\n  } catch(e2) {\n    console.log('Parse Search Results: Could not find source incidents');\n  }\n}\n\n// Get link filter config from Define Config\nconst linkFilters = $('Define Config').first().json._linkFilters || {};\nconst whitelistDomains = linkFilters.whitelistDomains || [];\nconst urlBlacklist = linkFilters.urlBlacklist || [];\nconst excludeDomains = linkFilters.excludeDomains || [];\n\nconsole.log(`Parse Search Results: Processing ${searchResults.length} search results, ${allIncidents.length} source incidents`);\n\nconst output = [];\n\nfor (let i = 0; i < searchResults.length; i++) {\n  const searchResult = searchResults[i].json;\n  const originalIncident = allIncidents[i]?.json || {};\n  \n  // Parse existing links\n  let existingLinks = originalIncident.additional_links || [];\n  if (typeof existingLinks === 'string') {\n    try { existingLinks = JSON.parse(existingLinks); } catch(e) { existingLinks = []; }\n  }\n  if (!Array.isArray(existingLinks)) existingLinks = [];\n  \n  const organicResults = searchResult.organic_results || [];\n  const newLinks = [];\n  let totalSearched = organicResults.length;\n  \n  for (const result of organicResults) {\n    const url = result.link || '';\n    const domain = url.replace(/^https?:\\/\\//, '').split('/')[0].replace(/^www\\./, '');\n    \n    // Check whitelist - must be on whitelist to be included\n    const isWhitelisted = whitelistDomains.some(allowed => domain.includes(allowed));\n    if (!isWhitelisted) continue;\n    \n    // Check URL blacklist\n    const isBlacklisted = urlBlacklist.some(blocked => url.startsWith(blocked));\n    if (isBlacklisted) continue;\n    \n    // Check excluded domains\n    const isExcluded = excludeDomains.some(exc => domain.includes(exc));\n    if (isExcluded) continue;\n    \n    // Check if URL already exists\n    const urlExists = existingLinks.some(link => link.url === url);\n    if (urlExists) continue;\n    \n    newLinks.push({\n      url: url,\n      title: result.title || '',\n      source: 'google_search',\n      snippet: result.snippet || '',\n      priority: 50\n    });\n  }\n  \n  // Merge links - keep existing non-google links and markers, add new ones\n  let mergedLinks = [...existingLinks.filter(l => l.source !== 'google_search' || l.source_type === 'marker')];\n  mergedLinks = mergedLinks.concat(newLinks);\n  \n  // If no new links found, add a marker so we don't re-search\n  if (newLinks.length === 0) {\n    mergedLinks = mergedLinks.filter(l => l.source_type !== 'marker');\n    mergedLinks.push({\n      url: 'searched',\n      title: 'Google search completed - no verified results',\n      source: 'google_search',\n      source_type: 'marker',\n      priority: 99\n    });\n  }\n  \n  console.log(`${originalIncident.registration}: Found ${newLinks.length} new links from ${totalSearched} results`);\n  \n  output.push({\n    json: {\n      registration: originalIncident.registration,\n      date_string: originalIncident.date_string,\n      merged_links_array: mergedLinks,\n      links_found: mergedLinks.length,\n      total_searched: totalSearched\n    }\n  });\n}\n\nif (output.length === 0) {\n  return [{ json: { success: false, message: 'No search results to process' } }];\n}\n\nreturn output;"
+      },
+      "id": "8438fb33-eba8-4706-8ea2-12bfab67ae77",
+      "name": "Parse Search Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        -912
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE citation_incidents \nSET additional_links = $1::jsonb,\n    serpapi_searched_at = NOW(),\n    updated_at = NOW() \nWHERE registration = $2\n  AND date_string = $3",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($json.merged_links_array), $json.registration, $json.date_string] }}"
+        }
+      },
+      "id": "4fef1355-77a5-4050-b847-746cccf20acc",
+      "name": "Update Links in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [
+        -544,
+        -912
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "b6e21d15-ccff-471e-9cb9-5bf74ce52d58",
+      "name": "Wait for Enrichment",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -992
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "596bf47b-ae5d-436c-990d-fe62ff9e313e",
+      "name": "Manual Init Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -2672,
+        -1248
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Citation Incidents Table\nCREATE TABLE IF NOT EXISTS citation_incidents (\n    id SERIAL PRIMARY KEY,\n    registration VARCHAR(20),\n    date_string VARCHAR(50),\n    incident_date DATE,\n    icao_code VARCHAR(10),\n    aircraft_name VARCHAR(100),\n    aircraft_type VARCHAR(100),\n    operator VARCHAR(200),\n    location VARCHAR(300),\n    fatalities INTEGER DEFAULT 0,\n    fatalities_raw VARCHAR(50),\n    damage VARCHAR(20),\n    severity VARCHAR(50),\n    source_url TEXT,\n    source VARCHAR(100),\n    synopsis TEXT,\n    raw_narrative TEXT,\n    raw_narrative_hash VARCHAR(32),\n    narrative_summary TEXT,\n    additional_links JSONB DEFAULT '[]',\n    is_new BOOLEAN DEFAULT false,\n    serpapi_searched_at TIMESTAMP,\n    created_at TIMESTAMP DEFAULT NOW(),\n    updated_at TIMESTAMP DEFAULT NOW(),\n    UNIQUE(registration, date_string)\n);\n\n-- Index for faster lookups\nCREATE INDEX IF NOT EXISTS idx_citation_incidents_icao ON citation_incidents(icao_code);\nCREATE INDEX IF NOT EXISTS idx_citation_incidents_date ON citation_incidents(incident_date DESC);\nCREATE INDEX IF NOT EXISTS idx_citation_incidents_registration ON citation_incidents(registration);\nCREATE INDEX IF NOT EXISTS idx_citation_incidents_fatalities ON citation_incidents(fatalities) WHERE fatalities > 0;\nCREATE INDEX IF NOT EXISTS idx_citation_incidents_serpapi ON citation_incidents(serpapi_searched_at) WHERE serpapi_searched_at IS NOT NULL;",
+        "options": {}
+      },
+      "id": "24e6a221-0bdd-4c89-b815-8e0bc84bc110",
+      "name": "Create Table (Run Once)",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -2448,
+        -1248
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Query incidents from the database\nconst queryOutput = $('Query All Incidents').all();\nconst incidents = queryOutput.map(item => item.json);\n\nconsole.log(`Filter For Narrative: Received ${incidents.length} incidents from Query All Incidents`);\n\n// Find incidents needing narrative processing\n// Only process if: has raw_narrative but NO summary yet\n// (Hash-based change detection is handled by Deep Refresh flow)\nconst needsProcessing = incidents.filter(inc => {\n  // Must have raw_narrative to process\n  const hasRawNarrative = inc.raw_narrative && inc.raw_narrative.length > 50;\n  if (!hasRawNarrative) return false;\n  \n  // Check if narrative_summary is missing or too short\n  const noSummary = !inc.narrative_summary || inc.narrative_summary.length < 20;\n  \n  return noSummary;\n});\n\nconsole.log(`Narrative Processing: ${needsProcessing.length} incidents need processing`);\n\nif (needsProcessing.length === 0) {\n  return [{ json: { skip: true, message: 'No incidents need narrative processing' } }];\n}\n\nreturn needsProcessing.map(inc => ({ json: inc }));"
+      },
+      "id": "83f7b1ce-320b-4632-a125-8f8448d4de14",
+      "name": "Filter For Narrative",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1056,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-narrative",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e3eff868-9476-4e11-bc4e-413856f0d3ff",
+      "name": "Check Narrative Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1232,
+        -256
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "36728e51-ccf3-4ba4-b340-d3623cf67907",
+      "name": "Fetch ASN Detail Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -976,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const incident = $('Filter For Narrative').item.json;\nconst html = $input.item.json.data || '';\n\n// ============ GET LINK FILTER CONFIG ============\nlet filters = {};\ntry {\n  filters = $('Define Config').first().json._linkFilters || {};\n} catch(e) {\n  console.log('Could not load link filters, using defaults');\n}\n\nconst urlBlacklist = filters.urlBlacklist || [];\nconst whitelistDomains = filters.whitelistDomains || [];\nconst excludeDomains = filters.excludeDomains || [];\nconst excludeExtensions = filters.excludeExtensions || [];\nconst atcDomains = filters.atcDomains || ['liveatc.net', 'globalair.com', 'broadcastify.com'];\nconst localTvAffiliatePatterns = filters.localTvAffiliatePatterns || [];\n\n// Extract narrative\nlet narrative = '';\nconst narrativePatterns = [\n  /Narrative:[\\s\\S]*?<\\/(?:span|td|b)>([\\s\\S]*?)(?=<(?:span|td|div)[^>]*class|Sources:|Accident investigation:)/i,\n  /<span[^>]*class=\"[^\"]*caption[^\"]*\"[^>]*>Narrative[^<]*<\\/span>([\\s\\S]*?)(?=<span[^>]*class=\"[^\"]*caption|Sources:|<\\/td>)/i\n];\nfor (const pattern of narrativePatterns) {\n  const match = html.match(pattern);\n  if (match && match[1]) { narrative = match[1]; break; }\n}\nnarrative = narrative.replace(/<br\\s*\\/?>/gi, ' ').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '\"').replace(/&#\\d+;/g, '').replace(/\\s+/g, ' ').trim();\nif (narrative.length > 3000) narrative = narrative.substring(0, 3000) + '...';\n\nlet asnLinks = [];\nconst seenUrls = new Set();\n\nconst addLink = (url, title, sourceType, priority) => {\n  let cleanUrl = url.replace(/[,;:\\s]+$/, '').replace(/&amp;/g, '&');\n  if (cleanUrl.length < 20 || cleanUrl.length > 500) return false;\n  if (seenUrls.has(cleanUrl)) return false;\n  \n  // Check against specific URL blacklist first\n  if (urlBlacklist.some(blocked => cleanUrl.startsWith(blocked) || cleanUrl === blocked)) return false;\n  \n  const domainMatch = cleanUrl.match(/https?:\\/\\/(?:www\\.)?([^/]+)/);\n  const domain = domainMatch ? domainMatch[1].toLowerCase() : '';\n  \n  // Skip ASN internal links\n  if (domain.includes('aviation-safety.net')) return false;\n  if (cleanUrl.includes('/wikibase/') || cleanUrl.includes('/database/')) return false;\n  \n  // Check if whitelisted - if so, ALWAYS include\n  const isWhitelisted = whitelistDomains.some(d => domain.includes(d));\n  \n  // Special check: exclude ASN YouTube channel\n  if (domain.includes('youtube.com') && cleanUrl.includes('/user/AviationSafetyNet')) return false;\n  \n  if (!isWhitelisted) {\n    // Only apply exclusions for non-whitelisted domains\n    if (excludeDomains.some(d => domain.includes(d))) return false;\n    if (excludeExtensions.some(ext => cleanUrl.toLowerCase().endsWith(ext))) return false;\n  }\n  \n  // Strip tracking params\n  if (cleanUrl.includes('utm_') || cleanUrl.includes('fbclid') || cleanUrl.includes('gclid')) {\n    cleanUrl = cleanUrl.split('?')[0];\n  }\n  \n  seenUrls.add(cleanUrl);\n  asnLinks.push({ url: cleanUrl, title: title || domain, domain, source_type: sourceType, priority, source: 'asn_page' });\n  return true;\n};\n\nconst categorizeUrl = (url, domain) => {\n  if (domain.includes('ntsb.gov') || url.includes('data.ntsb.gov')) return { type: 'ntsb', priority: 1, title: url.includes('pdf') ? 'NTSB Report (PDF)' : 'NTSB Investigation' };\n  if (domain.includes('bst-tsb.gc.ca')) return { type: 'tsb_canada', priority: 2, title: 'TSB Canada Report' };\n  if (domain.includes('kathrynsreport.com')) return { type: 'kathryns_report', priority: 3, title: 'Kathryns Report' };\n  if (domain.includes('avherald.com')) return { type: 'avherald', priority: 3, title: 'Aviation Herald' };\n  if (domain.includes('fl360aero.com')) return { type: 'news', priority: 4, title: 'FL360 Aero' };\n  if (domain.includes('flightaware.com')) return { type: 'flight_tracking', priority: 5, title: 'FlightAware' };\n  if (domain.includes('flightradar24.com')) return { type: 'flight_tracking', priority: 5, title: 'FlightRadar24' };\n  if (domain.includes('adsbexchange.com')) return { type: 'flight_tracking', priority: 5, title: 'ADS-B Exchange' };\n  if (domain.includes('youtube.com') || domain.includes('youtu.be')) return { type: 'video', priority: 6, title: 'Video' };\n  if (domain.includes('jetphotos.com')) return { type: 'photo', priority: 7, title: 'JetPhotos' };\n  if (domain.includes('planespotters.net')) return { type: 'photo', priority: 7, title: 'Planespotters' };\n  if (domain.includes('airliners.net')) return { type: 'photo', priority: 7, title: 'Airliners.net' };\n  \n  // ATC audio sources\n  if (atcDomains.some(d => domain.includes(d))) return { type: 'atc', priority: 5, title: 'ATC Audio' };\n  \n  // Major news from config\n  const majorNews = filters.majorNewsDomains || ['cnn.com', 'bbc.com', 'reuters.com', 'apnews.com', 'nbcnews.com', 'cbsnews.com', 'foxnews.com', 'nytimes.com', 'washingtonpost.com', 'abcnews.go.com', 'msnbc.com', 'usatoday.com'];\n  if (majorNews.some(d => domain.includes(d) || url.includes(d))) return { type: 'major_news', priority: 4, title: 'News Article' };\n  \n  // TV affiliate patterns (abc7.com, kwtx.com, etc.)\n  const domainBase = domain.split('.')[0];\n  if (localTvAffiliatePatterns.some(pattern => new RegExp(pattern, 'i').test(domainBase))) {\n    return { type: 'tv_affiliate', priority: 4, title: 'TV News' };\n  }\n  \n  // Local/regional news\n  const newsIndicators = ['news', 'post', 'times', 'herald', 'gazette', 'tribune', 'journal', 'press', 'daily', 'star', 'sun', 'dispatch', 'chronicle', 'examiner', 'observer', 'reporter', 'courier', 'sentinel'];\n  if (newsIndicators.some(ind => domain.includes(ind))) return { type: 'news', priority: 5, title: 'News Article' };\n  \n  return { type: 'other', priority: 8, title: domain.split('.')[0] };\n};\n\n// Extract ALL href attributes from the page\nconst hrefRegex = /href=[\"']([^\"']+)[\"']/gi;\nlet match;\nwhile ((match = hrefRegex.exec(html)) !== null) {\n  let url = match[1];\n  if (url.startsWith('#') || url.startsWith('javascript:') || url.startsWith('mailto:')) continue;\n  if (url.startsWith('/') && !url.startsWith('//')) url = 'https://aviation-safety.net' + url;\n  else if (url.startsWith('//')) url = 'https:' + url;\n  if (!url.startsWith('http')) continue;\n  \n  const domainMatch = url.match(/https?:\\/\\/(?:www\\.)?([^/]+)/);\n  const domain = domainMatch ? domainMatch[1].toLowerCase() : '';\n  const cat = categorizeUrl(url, domain);\n  addLink(url, cat.title, cat.type, cat.priority);\n}\n\n// Also find URLs in src attributes (for images like jetphotos)\nconst srcRegex = /src=[\"'](https?:\\/\\/[^\"']+)[\"']/gi;\nwhile ((match = srcRegex.exec(html)) !== null) {\n  let url = match[1];\n  const domainMatch = url.match(/https?:\\/\\/(?:www\\.)?([^/]+)/);\n  const domain = domainMatch ? domainMatch[1].toLowerCase() : '';\n  // Only grab whitelisted image sources\n  if (whitelistDomains.some(d => domain.includes(d))) {\n    const cat = categorizeUrl(url, domain);\n    addLink(url, cat.title, cat.type, cat.priority);\n  }\n}\n\n// ALWAYS auto-add FAA Registry link for N-number aircraft (we control this link)\nconst registration = incident.registration || '';\nif (registration.toUpperCase().startsWith('N') && registration.length > 1) {\n  const fullReg = registration.toUpperCase();\n  const faaUrl = `https://registry.faa.gov/AircraftInquiry/Search/NNumberResult?nNumberTxt=${fullReg}`;\n  asnLinks.push({ url: faaUrl, title: 'FAA Registry', domain: 'registry.faa.gov', source_type: 'faa', priority: 2, source: 'auto_generated' });\n}\n\nasnLinks.sort((a, b) => a.priority - b.priority);\n\nconsole.log(incident.registration + ': Found ' + asnLinks.length + ' links');\n\nreturn { json: { ...incident, raw_narrative: narrative, has_narrative: narrative.length > 50, asn_source_links: asnLinks, asn_links_count: asnLinks.length } };"
+      },
+      "id": "00932874-325d-414c-9df4-a047757367bd",
+      "name": "Extract Narrative Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -768,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Get incident data - try multiple sources for different flow paths\nlet incident;\ntry {\n  // Main workflow path (from narrative processing)\n  incident = $('Extract Narrative Text').item.json;\n} catch(e) {\n  try {\n    // Manual AI workflow path\n    incident = $('Format for AI').item.json;\n  } catch(e2) {\n    // Fallback to input\n    incident = $input.item.json;\n  }\n}\n\nconst aiResponse = $input.item.json;\nlet summary = '';\n\n// Handle AI Agent output format\nif (aiResponse.output) {\n  summary = aiResponse.output.trim();\n} else if (aiResponse.message && aiResponse.message.content) {\n  summary = aiResponse.message.content.trim();\n} else if (aiResponse.content) {\n  summary = aiResponse.content.trim();\n} else if (typeof aiResponse === 'string') {\n  summary = aiResponse.trim();\n}\n\n// Fallback if no narrative was available\nif (!summary || summary.length < 20) {\n  const fatalities = incident.fatalities || 0;\n  const damage = incident.damage || 'unknown';\n  const damageText = damage === 'w/o' ? 'The aircraft was destroyed.' : damage === 'sub' ? 'The aircraft sustained substantial damage.' : damage === 'min' ? 'The aircraft sustained minor damage.' : '';\n  const fatalText = fatalities > 0 ? 'The accident resulted in ' + fatalities + ' fatalities.' : 'There were no fatalities.';\n  summary = 'On ' + incident.date_string + ', a ' + (incident.aircraft_type || incident.aircraft_name) + ' (' + incident.registration + ') was involved in an incident near ' + incident.location + '. ' + fatalText + ' ' + damageText;\n}\n\n// Get ASN source links from extraction (may be empty for manual flow)\nconst asnLinks = incident.asn_source_links || [];\n\nconsole.log(incident.registration + ': Generated summary (' + summary.length + ' chars), ' + asnLinks.length + ' ASN links');\n\nreturn { json: { \n  registration: incident.registration, \n  date_string: incident.date_string, \n  narrative_summary: summary,\n  additional_links: asnLinks\n} };"
+      },
+      "id": "a68e9d4c-20a7-4294-87e6-8780f42bcb7c",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -176,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE citation_incidents \nSET narrative_summary = '{{ $json.narrative_summary.replace(/'/g, \"''\") }}',\n    additional_links = (\n      SELECT COALESCE(jsonb_agg(link ORDER BY (link->>'priority')::int), '[]'::jsonb)\n      FROM (\n        SELECT DISTINCT ON (link->>'url') link\n        FROM (\n          SELECT jsonb_array_elements(COALESCE(additional_links, '[]'::jsonb)) AS link\n          UNION ALL\n          SELECT jsonb_array_elements('{{ JSON.stringify($json.additional_links || []).replace(/'/g, \"''\") }}'::jsonb) AS link\n        ) all_links\n        WHERE link->>'url' IS NOT NULL\n      ) unique_links\n    ),\n    updated_at = NOW() \nWHERE registration = '{{ $json.registration }}' \n  AND date_string = '{{ $json.date_string.replace(/'/g, \"''\") }}'",
+        "options": {}
+      },
+      "id": "8e0a8707-e7b4-457c-8856-194fc3e19ae8",
+      "name": "Update Narrative in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        32,
+        -352
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "043ed9c0-37aa-4729-b5a0-0a3a834e6064",
+      "name": "Wait for Narrative",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        272,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "gpt-4o"
+        },
+        "builtInTools": {},
+        "options": {
+          "maxTokens": 500
+        }
+      },
+      "id": "674de5f3-3e65-48a8-932b-96870e21ca6a",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        -480,
+        -48
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "YOUR_OPENAI_CREDENTIAL_ID",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze this aviation incident and provide a single-paragraph general overview summarizing what happened.\n\nAircraft: {{ $json.registration }} ({{ $json.aircraft_type || $json.aircraft_name }})\nDate: {{ $json.date_string }}\nLocation: {{ $json.location }}\nFatalities: {{ $json.fatalities || 0 }}\nDamage: {{ $json.damage }}\n\nNarrative:\n{{ $json.raw_narrative || 'No narrative available.' }}\n\nYour summary MUST:\n- Be ONE FULL PARAGRAPH with 4-6 sentences minimum\n- Include specific details: weather, phase of flight, crew actions, contributing factors\n- Use IMPERIAL UNITS ONLY (miles, feet, knots) - convert any metric measurements\n- End with aircraft status and any injuries/fatalities\n- Reference {{ $json.registration }} and {{ $json.date_string }}\n\nDO NOT write just one sentence. That is unacceptable.",
+        "options": {
+          "systemMessage": "Aviation Safety Expert \u2013 Summary Prompt\n\nRole: You are an Aviation Safety Expert specializing in incident and accident analysis. You are trained to interpret narrative reports factually and objectively.\n\nTask: You will be given a complete narrative describing an aircraft incident or accident. Your job is to produce a single-paragraph general overview summarizing what happened.\n\nCRITICAL LENGTH REQUIREMENT: Your response MUST be a whole paragraph containing 4-6 sentences minimum (approximately 80-150 words). A single sentence is NEVER acceptable.\n\nUNITS REQUIREMENT: Always use imperial/US customary units in your summary:\n* Distances: statute miles (mi), nautical miles (nm), or feet (ft) \u2013 NEVER kilometers\n* Altitudes: feet (ft) \u2013 NEVER meters\n* Speeds: knots (kt) \u2013 NEVER km/h\n* If the source narrative uses metric units, convert them to imperial (1 km \u2248 0.62 mi, 1 m \u2248 3.28 ft)\n\nRequirements & Constraints:\n* Use only the information explicitly provided in the narrative.\n* Do not infer, speculate, assume, or add any details beyond what is stated.\n* Do not include personal opinions, interpretations, or bias.\n* Keep the summary clear, neutral, and factual.\n* Focus on the essential sequence of events, conditions, and circumstances.\n* At the end of the paragraph, include the status of the aircraft and any reported injuries or fatalities, but only if these are explicitly stated in the narrative.\n\nOutput Format: A single paragraph stating only what the narrative confirms, ending with the aircraft status and any reported injuries or fatalities if known."
+        }
+      },
+      "id": "9970b84d-96b7-450a-9c13-d322ef828202",
+      "name": "Aviation Safety Expert",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -480,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "citation-monitor-run",
+        "options": {}
+      },
+      "id": "63944c6b-4489-416d-a01a-4d1adae8ffb6",
+      "name": "Manual Run Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2688,
+        -752
+      ],
+      "webhookId": "YOUR_WEBHOOK_ID_1"
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "8de953e0-490f-4c7d-998c-9801ef7b0a71",
+      "name": "Fetch Detail Pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -496,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Extract ASN Sources - WITH FAA REGISTRY LINKS\n\nfunction simpleHash(str) {\n  if (!str) return null;\n  let hash = 0;\n  for (let i = 0; i < str.length; i++) {\n    hash = (hash * 31 + str.charCodeAt(i)) | 0;\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\n// Get incident data by index position (item pairing is broken by Aggregate node)\nconst allIncidents = $('Filter Detail Fetch Candidates').all();\nconst incident = allIncidents[$itemIndex]?.json || {};\nconst html = $input.item.json.data || '';\n\n// GET LINK FILTER CONFIG - Updated to use Define Config\nlet filters = {};\ntry {\n  filters = $('Define Config').first().json._linkFilters || {};\n} catch (e) {\n  console.log('Could not load link filters, using defaults');\n}\n\nconst urlBlacklist = filters.urlBlacklist || [];\nconst whitelistDomains = filters.whitelistDomains || [];\nconst excludeDomains = filters.excludeDomains || [];\nconst excludeExtensions = filters.excludeExtensions || [];\nconst atcDomains = filters.atcDomains || ['liveatc.net', 'globalair.com', 'broadcastify.com'];\nconst localTvAffiliatePatterns = filters.localTvAffiliatePatterns || [];\n\n// EXTRACT RAW NARRATIVE\nlet rawNarrative = '';\nconst simplePattern = /Narrative:\\s*([\\s\\S]*?)(?=Accident investigation:|Sources:|History of this aircraft|Location|$)/i;\nconst match = html.match(simplePattern);\nif (match && match[1]) {\n  rawNarrative = match[1];\n}\n\nrawNarrative = rawNarrative\n  .replace(/<br\\s*\\/?>/gi, ' ')\n  .replace(/<[^>]*>/g, '')\n  .replace(/&nbsp;/g, ' ')\n  .replace(/&amp;/g, '&')\n  .replace(/&quot;/g, '\"')\n  .replace(/&#\\d+;/g, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\n  \nif (rawNarrative.length > 5000) rawNarrative = rawNarrative.substring(0, 5000);\n\nconst rawNarrativeHash = rawNarrative.length > 50 ? simpleHash(rawNarrative) : null;\n\n// EXTRACT AND GENERATE LINKS\nconst asnLinks = [];\nconst seenUrls = new Set();\n\nconst addLink = (url, title, sourceType, priority, source = 'asn_page') => {\n  let cleanUrl = url.replace(/[,;:\\s]+$/, '').replace(/&amp;/g, '&');\n  if (cleanUrl.length < 15 || cleanUrl.length > 500) return false;\n  if (seenUrls.has(cleanUrl)) return false;\n  \n  if (urlBlacklist.some(blocked => cleanUrl.startsWith(blocked) || cleanUrl === blocked)) return false;\n  \n  const domainMatch = cleanUrl.match(/https?:\\/\\/(?:www\\.)?([^/]+)/);\n  const domain = domainMatch ? domainMatch[1].toLowerCase() : '';\n  \n  if (domain.includes('aviation-safety.net')) return false;\n  if (cleanUrl.includes('/wikibase/') || cleanUrl.includes('/database/')) return false;\n  \n  const isWhitelisted = whitelistDomains.some(d => domain.includes(d));\n  \n  if (domain.includes('youtube.com') && cleanUrl.includes('/user/AviationSafetyNet')) return false;\n  \n  if (!isWhitelisted) {\n    if (excludeDomains.some(d => domain.includes(d))) return false;\n    if (excludeExtensions.some(ext => cleanUrl.toLowerCase().endsWith(ext))) return false;\n  }\n  \n  if (cleanUrl.includes('utm_') || cleanUrl.includes('fbclid') || cleanUrl.includes('gclid')) {\n    cleanUrl = cleanUrl.split('?')[0];\n  }\n  \n  seenUrls.add(cleanUrl);\n  asnLinks.push({ url: cleanUrl, title: title || domain, domain, source_type: sourceType, priority, source });\n  return true;\n};\n\nconst categorizeUrl = (url, domain) => {\n  if (domain.includes('ntsb.gov') || url.includes('data.ntsb.gov')) return { type: 'ntsb', priority: 1, title: url.includes('pdf') ? 'NTSB Report (PDF)' : 'NTSB Investigation' };\n  if (domain.includes('bst-tsb.gc.ca')) return { type: 'tsb_canada', priority: 2, title: 'TSB Canada Report' };\n  if (domain.includes('kathrynsreport.com')) return { type: 'kathryns_report', priority: 3, title: 'Kathryns Report' };\n  if (domain.includes('avherald.com')) return { type: 'avherald', priority: 3, title: 'Aviation Herald' };\n  if (domain.includes('fl360aero.com')) return { type: 'news', priority: 4, title: 'FL360 Aero' };\n  if (domain.includes('flightaware.com')) return { type: 'flight_tracking', priority: 5, title: 'FlightAware' };\n  if (domain.includes('flightradar24.com')) return { type: 'flight_tracking', priority: 5, title: 'FlightRadar24' };\n  if (domain.includes('adsbexchange.com')) return { type: 'flight_tracking', priority: 5, title: 'ADS-B Exchange' };\n  if (domain.includes('youtube.com') || domain.includes('youtu.be')) return { type: 'video', priority: 6, title: 'Video' };\n  if (domain.includes('jetphotos.com')) return { type: 'photo', priority: 7, title: 'JetPhotos' };\n  if (domain.includes('planespotters.net')) return { type: 'photo', priority: 7, title: 'Planespotters' };\n  if (domain.includes('airliners.net')) return { type: 'photo', priority: 7, title: 'Airliners.net' };\n  \n  // ATC audio sources\n  if (atcDomains.some(d => domain.includes(d))) return { type: 'atc', priority: 5, title: 'ATC Audio' };\n  \n  // Major news from config\n  const majorNews = filters.majorNewsDomains || ['cnn.com', 'bbc.com', 'reuters.com', 'apnews.com', 'nbcnews.com', 'cbsnews.com', 'foxnews.com', 'nytimes.com', 'washingtonpost.com', 'abcnews.go.com', 'msnbc.com', 'usatoday.com'];\n  if (majorNews.some(d => domain.includes(d) || url.includes(d))) return { type: 'major_news', priority: 4, title: 'News Article' };\n  \n  // TV affiliate patterns (abc7.com, kwtx.com, etc.)\n  const domainBase = domain.split('.')[0];\n  if (localTvAffiliatePatterns.some(pattern => new RegExp(pattern, 'i').test(domainBase))) {\n    return { type: 'tv_affiliate', priority: 4, title: 'TV News' };\n  }\n  \n  // Local/regional news\n  const newsIndicators = ['news', 'post', 'times', 'herald', 'gazette', 'tribune', 'journal', 'press', 'daily', 'star', 'sun', 'dispatch', 'chronicle', 'examiner', 'observer', 'reporter', 'courier', 'sentinel'];\n  if (newsIndicators.some(ind => domain.includes(ind))) return { type: 'news', priority: 5, title: 'News Article' };\n  \n  return { type: 'other', priority: 8, title: domain.split('.')[0] };\n};\n\n// Extract ALL href attributes from the page\nconst hrefRegex = /href=[\"']([^\"']+)[\"']/gi;\nlet hrefMatch;\nwhile ((hrefMatch = hrefRegex.exec(html)) !== null) {\n  let url = hrefMatch[1];\n  if (url.startsWith('#') || url.startsWith('javascript:') || url.startsWith('mailto:')) continue;\n  if (url.startsWith('/') && !url.startsWith('//')) url = 'https://aviation-safety.net' + url;\n  else if (url.startsWith('//')) url = 'https:' + url;\n  if (!url.startsWith('http')) continue;\n  \n  const domainMatch = url.match(/https?:\\/\\/(?:www\\.)?([^/]+)/);\n  const domain = domainMatch ? domainMatch[1].toLowerCase() : '';\n  const cat = categorizeUrl(url, domain);\n  addLink(url, cat.title, cat.type, cat.priority);\n}\n\n// ALWAYS ADD FAA REGISTRY LINK FOR N-NUMBER AIRCRAFT\nconst registration = (incident.registration || '').toUpperCase();\nif (registration.startsWith('N') && registration.length > 1) {\n  const faaUrl = `https://registry.faa.gov/AircraftInquiry/Search/NNumberResult?nNumberTxt=${registration}`;\n  asnLinks.push({\n    url: faaUrl,\n    title: 'FAA Registry',\n    domain: 'registry.faa.gov',\n    source_type: 'faa',\n    priority: 2,\n    source: 'auto_generated'\n  });\n}\n\nasnLinks.sort((a, b) => a.priority - b.priority);\n\nconsole.log(`${incident.registration}: Extracted ${asnLinks.length} links, narrative: ${rawNarrative.length} chars`);\n\nreturn {\n  json: {\n    ...incident,\n    raw_narrative: rawNarrative,\n    raw_narrative_hash: rawNarrativeHash,\n    additional_links: JSON.stringify(asnLinks)\n  }\n};"
+      },
+      "id": "d8dc93ba-74c7-43b6-8c2c-ad5c86c47051",
+      "name": "Extract ASN Sources",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM citation_incidents ORDER BY incident_date DESC NULLS LAST, created_at DESC",
+        "options": {}
+      },
+      "id": "511c5e30-8547-48d3-9912-d5d86e47c752",
+      "name": "Query Final Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -272,
+        -592
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const incidents = $input.all().map(item => item.json);\n\n// Get ALL config from Define Config\nconst config = $('Define Config').first().json;\nconst aircraftGroups = config._aircraftGroups || [];\nconst aircraftTypeOrder = config._aircraftTypeOrder || [];\nconst htmlConfig = config._htmlConfig || {};\n\n// HTML config with defaults\nconst background = htmlConfig.background || './map_background.gif';\nconst logo = htmlConfig.logo || './logo.png';\nconst logoWidth = htmlConfig.logoWidth || 260;\nconst logoHeight = htmlConfig.logoHeight || 200;\nconst pageTitle = htmlConfig.title || 'Aircraft Incidents and Accidents';\nconst homeUrl = htmlConfig.homeUrl || 'https://example.com';\nconst quote = htmlConfig.quote || '\"Those who cannot remember the past are condemned to repeat it.\" \u2014 George Santayana';\n\n// Get unique aircraft types that exist in our data\nconst existingTypes = [...new Set(incidents.map(i => i.icao_code).filter(Boolean))];\n\n// Sort by our defined order (unknown types go at the end)\nconst sortedTypes = existingTypes.sort((a, b) => {\n  const indexA = aircraftTypeOrder.indexOf(a);\n  const indexB = aircraftTypeOrder.indexOf(b);\n  if (indexA === -1 && indexB === -1) return a.localeCompare(b);\n  if (indexA === -1) return 1;\n  if (indexB === -1) return -1;\n  return indexA - indexB;\n});\n\n// Build dropdown options\nlet aircraftOptions = '\\n<option value=\"\" disabled selected>-- Select an Aircraft --</option>\\n<option value=\"all\">All Aircraft</option>';\n\naircraftGroups.forEach(group => {\n  aircraftOptions += `\\n<option value=\"${group.id}\">${group.name}</option>`;\n});\n\naircraftOptions += '\\n<option disabled>\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500</option>';\n\n// Add individual types in correct order\nsortedTypes.forEach(code => {\n  const sample = incidents.find(i => i.icao_code === code);\n  const name = sample ? sample.aircraft_name : code;\n  aircraftOptions += `\\n<option value=\"${code}\">${code} - ${name}</option>`;\n});\n\n// Build JavaScript group definitions from config\nconst jsGroupDefs = aircraftGroups.map(g => \n  `const ${g.id}Types = ${JSON.stringify(g.types)};`\n).join('\\n    ');\n\n// Build JavaScript filter logic from config\nconst jsFilterLogic = aircraftGroups.map(g => \n  `else if (aircraft === '${g.id}') { allowedTypes = ${g.id}Types; }`\n).join(' ');\n\nconst generateLinksSection = (inc) => {\n  let additionalLinks = inc.additional_links || [];\n  if (typeof additionalLinks === 'string') {\n    try { additionalLinks = JSON.parse(additionalLinks); } catch(e) { additionalLinks = []; }\n  }\n  if (!additionalLinks || additionalLinks.length === 0) return '';\n  const grouped = {};\n  for (const link of additionalLinks) {\n    const type = link.source_type || 'other';\n    if (!grouped[type]) grouped[type] = [];\n    grouped[type].push(link);\n  }\n  // UPDATED: All news types use 'NEWS' label, ATC uses 'ATC'\n  const typeLabels = { ntsb: 'NTSB', faa: 'FAA', asn: 'ASN', tsb_canada: 'TSB Canada', kathryns_report: 'Kathryns Report', avherald: 'Aviation Herald', major_news: 'NEWS', tv_affiliate: 'NEWS', news: 'NEWS', atc: 'LIVE ATC', video: 'Video', photo: 'Photos', flight_tracking: 'Flight Tracking', other: 'Other' };\n  const typeOrder = ['ntsb', 'faa', 'asn', 'tsb_canada', 'kathryns_report', 'avherald', 'major_news', 'tv_affiliate', 'news', 'atc', 'video', 'flight_tracking', 'photo', 'other'];\n  let linksHtml = '<div class=\"additional-links\"><h4>Additional Resources</h4><div class=\"links-grid\">';\n  for (const type of typeOrder) {\n    if (grouped[type] && grouped[type].length > 0) {\n      for (const link of grouped[type]) {\n        const linkTitle = (link.title || link.domain || 'View').substring(0, 40);\n        linksHtml += `<a href=\"${link.url}\" target=\"_blank\" class=\"resource-link\" title=\"${linkTitle}\"><span class=\"link-type\">${typeLabels[type] || type}</span>${linkTitle}</a>`;\n      }\n    }\n  }\n  linksHtml += '</div></div>';\n  return linksHtml;\n};\n\nconst tableRows = incidents.map(inc => {\n  const isNew = inc.is_new ? 'new-incident' : '';\n  const hasFatalities = inc.fatalities > 0 ? 'has-fatalities' : '';\n  let severityClass = 'severity-unknown';\n  if (inc.fatalities > 0 || inc.damage === 'w/o') severityClass = 'severity-fatal';\n  else if (inc.damage === 'sub') severityClass = 'severity-serious';\n  else if (inc.damage === 'min') severityClass = 'severity-minor';\n  else if (inc.damage === 'non') severityClass = 'severity-none';\n  const dateDisplay = inc.date_string || inc.incident_date || 'Unknown';\n  const fatalDisplay = inc.fatalities > 0 ? inc.fatalities : (inc.fatalities_raw || '0');\n  const asnLink = inc.source_url || '';\n  const hasValidAsnLink = asnLink && asnLink.includes('wikibase/') && /\\/\\d+$/.test(asnLink);\n  const narrative = inc.narrative_summary || '';\n  const hasNarrative = narrative && narrative.length > 20;\n  \n  const searchText = [\n    inc.location || '',\n    inc.operator || '',\n    inc.aircraft_type || '',\n    inc.aircraft_name || '',\n    narrative\n  ].join(' ').toLowerCase().replace(/'/g, '');\n  \n  return `\n    <tr class=\"incident-row ${isNew} ${hasFatalities}\" \n        data-icao=\"${inc.icao_code || ''}\" \n        data-reg=\"${(inc.registration || '').toUpperCase()}\"\n        data-date=\"${inc.incident_date || ''}\" \n        data-fatalities=\"${inc.fatalities || 0}\"\n        data-search=\"${searchText.replace(/\"/g, '')}\"\n        style=\"display: none;\"\n        onclick=\"toggleDetails(this)\">\n      <td class=\"expand-cell\"><span class=\"expand-arrow\">&#9654;</span></td>\n      <td>${inc.icao_code || ''}</td>\n      <td>${inc.registration || ''}</td>\n      <td>${dateDisplay}</td>\n      <td>${inc.location || ''}</td>\n      <td class=\"fatalities-cell\">${fatalDisplay}</td>\n      <td><span class=\"severity-badge ${severityClass}\">${inc.severity || 'Unknown'}</span></td>\n    </tr>\n    <tr class=\"details-row\" style=\"display: none;\">\n      <td colspan=\"7\">\n        <div class=\"details-content\">\n          <div class=\"details-grid\">\n            <div class=\"details-info\">\n              <p><strong>Aircraft:</strong> ${inc.aircraft_type || inc.aircraft_name || ''}</p>\n              <p><strong>Operator:</strong> ${inc.operator || 'Unknown'}</p>\n              <p><strong>Damage:</strong> ${inc.damage || 'Unknown'}</p>\n              ${hasValidAsnLink ? `<p><a href=\"${asnLink}\" target=\"_blank\" class=\"view-link\">View on Aviation Safety Network</a></p>` : ''}\n            </div>\n            ${hasNarrative ? `<div class=\"details-narrative\"><h4>Incident Summary</h4><p>${narrative}</p></div>` : ''}\n          </div>\n          ${generateLinksSection(inc)}\n        </div>\n      </td>\n    </tr>`;\n}).join('');\n\nconst html = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>${pageTitle}</title>\n  <style>\n    * { margin: 0; padding: 0; box-sizing: border-box; }\n    body { font-family: Arial, Helvetica, sans-serif; background: url('${background}') repeat; min-height: 100vh; color: #333; }\n    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }\n    .header { text-align: center; padding: 20px; margin-bottom: 10px; }\n    .header img { width: ${logoWidth}px; height: ${logoHeight}px; margin-bottom: 10px; }\n    .header h1 { font-size: 24px; color: #333; margin-bottom: 5px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .header p { color: #555; font-size: 14px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .stats-bar { display: flex; justify-content: center; gap: 40px; padding: 15px; margin-bottom: 15px; flex-wrap: wrap; }\n    .stat-item { text-align: center; padding: 10px 20px; }\n    .stat-value { font-size: 28px; font-weight: bold; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .stat-value.total { color: #333; }\n    .stat-value.fatal { color: #dc2626; }\n    .stat-value.fatalities { color: #ea580c; }\n    .stat-value.recent { color: #16a34a; }\n    .stat-label { font-size: 11px; color: #555; text-transform: uppercase; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    .filters { display: flex; gap: 15px; padding: 15px 20px; background: rgba(255,255,255,0.95); border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); flex-wrap: wrap; align-items: center; }\n    .filter-group { display: flex; flex-direction: column; gap: 5px; }\n    .filter-group label { font-size: 11px; color: #666; text-transform: uppercase; }\n    .filter-group select, .filter-group input { padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; min-width: 140px; }\n    .filter-group input[type=\"text\"].tail-input { text-transform: uppercase; }\n    .filter-group select:disabled, .filter-group input:disabled { background: #e5e5e5; color: #999; cursor: not-allowed; }\n    .filter-group.disabled label { color: #999; }\n    .btn { padding: 10px 20px; background: #75787B; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; transition: background 0.2s; }\n    .btn:hover { background: #FE5000; }\n    .table-container { background: rgba(255,255,255,0.98); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }\n    .select-prompt { text-align: center; padding: 60px 20px; color: #666; font-size: 16px; }\n    table { width: 100%; border-collapse: collapse; }\n    thead { background: #75787B; color: white; }\n    th { padding: 12px 15px; text-align: left; font-weight: 600; font-size: 13px; text-transform: uppercase; }\n    th:first-child { width: 40px; }\n    .incident-row { cursor: pointer; transition: background 0.2s; }\n    .incident-row:hover { background: #f5f5f5; }\n    .incident-row.new-incident { background: #e8f5e9; }\n    .incident-row.new-incident:hover { background: #c8e6c9; }\n    .incident-row.has-fatalities { border-left: 4px solid #dc2626; }\n    td { padding: 12px 15px; border-bottom: 1px solid #eee; font-size: 14px; }\n    .expand-cell { text-align: center; }\n    .expand-arrow { display: inline-block; transition: transform 0.2s; color: #666; }\n    .incident-row.expanded .expand-arrow { transform: rotate(90deg); }\n    .fatalities-cell { font-weight: bold; color: #dc2626; }\n    .severity-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }\n    .severity-fatal { background: #fecaca; color: #dc2626; }\n    .severity-serious { background: #fed7aa; color: #ea580c; }\n    .severity-minor { background: #fef08a; color: #ca8a04; }\n    .severity-none { background: #d1fae5; color: #16a34a; }\n    .severity-unknown { background: #e5e7eb; color: #6b7280; }\n    .details-row td { padding: 0; background: #fafafa; }\n    .details-content { padding: 20px 30px; border-left: 4px solid #FE5000; }\n    .details-grid { display: grid; grid-template-columns: 280px 1fr; gap: 20px; margin-bottom: 15px; }\n    .details-info p { margin-bottom: 8px; font-size: 14px; }\n    .details-narrative { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 15px; }\n    .details-narrative h4 { font-size: 13px; color: #0369a1; margin-bottom: 8px; text-transform: uppercase; }\n    .details-narrative p { font-size: 14px; line-height: 1.6; color: #334155; }\n    .view-link { color: #FE5000; text-decoration: none; font-weight: 600; }\n    .view-link:hover { text-decoration: underline; }\n    .additional-links { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; }\n    .additional-links h4 { font-size: 13px; color: #333; margin-bottom: 12px; text-transform: uppercase; }\n    .links-grid { display: flex; flex-wrap: wrap; gap: 8px; }\n    .resource-link { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; color: #334155; text-decoration: none; font-size: 13px; transition: all 0.2s; }\n    .resource-link:hover { background: #e0f2fe; border-color: #7dd3fc; color: #0369a1; }\n    .link-type { font-size: 10px; font-weight: 600; color: #64748b; text-transform: uppercase; padding: 2px 6px; background: #e2e8f0; border-radius: 3px; margin-right: 4px; }\n    .back-btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: #75787B; color: white; text-decoration: none; border-radius: 4px; transition: background 0.2s; }\n    .back-btn:hover { background: #FE5000; }\n    .footer { text-align: center; padding: 20px; color: #555; font-size: 12px; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); }\n    @media (max-width: 900px) { .details-grid { grid-template-columns: 1fr; } }\n    @media (max-width: 768px) { .stats-bar { gap: 15px; } .filters { flex-direction: column; } .filter-group { width: 100%; } .filter-group select, .filter-group input { width: 100%; } table { font-size: 12px; } th, td { padding: 8px; } }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <div class=\"header\">\n      <img src=\"${logo}\" alt=\"Logo\" width=\"${logoWidth}\" height=\"${logoHeight}\">\n      <h1>${pageTitle}</h1>\n      <p>Data sourced from Aviation Safety Network | Updated: ${new Date().toLocaleDateString()}</p>\n      <p style=\"font-size: 16px; font-style: italic; font-weight: bold; margin: 20px 0 5px 0; color: #444; text-shadow: 1px 1px 2px rgba(255,255,255,0.8); text-align: center;\">${quote}</p>\n    </div>\n    <div class=\"stats-bar\">\n      <div class=\"stat-item\"><div class=\"stat-value total\" id=\"stat-total\">0</div><div class=\"stat-label\">Total Incidents</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value fatal\" id=\"stat-fatal\">0</div><div class=\"stat-label\">Fatal Incidents</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value fatalities\" id=\"stat-fatalities\">0</div><div class=\"stat-label\">Total Fatalities</div></div>\n      <div class=\"stat-item\"><div class=\"stat-value recent\" id=\"stat-recent\">0</div><div class=\"stat-label\">Last 30 Days</div></div>\n    </div>\n    <div class=\"filters\">\n      <div class=\"filter-group\" id=\"aircraft-group\"><label>Aircraft Type</label><select id=\"filter-aircraft\" onchange=\"applyFilters()\">${aircraftOptions}</select></div>\n      <div class=\"filter-group\"><label>Tail #</label><input type=\"text\" id=\"filter-registration\" class=\"tail-input\" placeholder=\"e.g. N123AB\" oninput=\"handleTailInput()\"></div>\n      <div class=\"filter-group\"><label>Keyword</label><input type=\"text\" id=\"filter-keyword\" placeholder=\"Location, operator...\" oninput=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"date-from-group\"><label>Date From</label><input type=\"date\" id=\"filter-date-from\" onchange=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"date-to-group\"><label>Date To</label><input type=\"date\" id=\"filter-date-to\" onchange=\"applyFilters()\"></div>\n      <div class=\"filter-group\" id=\"fatal-group\"><label>Show</label><select id=\"filter-fatal\" onchange=\"applyFilters()\"><option value=\"all\">All Incidents</option><option value=\"fatal\">Fatal Only</option></select></div>\n      <button class=\"btn\" onclick=\"clearFilters()\">Clear Filters</button>\n    </div>\n    <div class=\"table-container\">\n      <div id=\"select-prompt\" class=\"select-prompt\">Please select an aircraft type or enter a tail number to view incidents</div>\n      <table id=\"incidents-table-wrapper\" style=\"display: none;\">\n        <thead><tr><th></th><th>Type</th><th>Registration</th><th>Date</th><th>Location</th><th>Fatal</th><th>Severity</th></tr></thead>\n        <tbody id=\"incidents-table\">${tableRows}</tbody>\n      </table>\n    </div>\n    <div class=\"footer\">\n      <a href=\"${homeUrl}\" class=\"back-btn\">Home</a>\n      <p style=\"margin-top: 20px;\">Data from Aviation Safety Network. Click any row to view details. For training purposes only.</p>\n    </div>\n  </div>\n  <script>\n    ${jsGroupDefs}\n    function toggleDetails(row) { const detailsRow = row.nextElementSibling; const isExpanded = row.classList.contains('expanded'); document.querySelectorAll('.incident-row.expanded').forEach(r => { if (r !== row) { r.classList.remove('expanded'); r.nextElementSibling.style.display = 'none'; } }); if (isExpanded) { row.classList.remove('expanded'); detailsRow.style.display = 'none'; } else { row.classList.add('expanded'); detailsRow.style.display = 'table-row'; } }\n    function updateStats() { const visibleRows = document.querySelectorAll('.incident-row:not([style*=\"display: none\"])'); let totalCount = 0, fatalCount = 0, fatalitiesSum = 0, recentCount = 0; const thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30); visibleRows.forEach(row => { totalCount++; const fatalities = parseInt(row.dataset.fatalities) || 0; if (fatalities > 0) { fatalCount++; fatalitiesSum += fatalities; } const dateStr = row.dataset.date; if (dateStr) { const incDate = new Date(dateStr); if (incDate > thirtyDaysAgo) recentCount++; } }); document.getElementById('stat-total').textContent = totalCount; document.getElementById('stat-fatal').textContent = fatalCount; document.getElementById('stat-fatalities').textContent = fatalitiesSum; document.getElementById('stat-recent').textContent = recentCount; }\n    function handleTailInput() { const regSearch = document.getElementById('filter-registration').value.trim(); const aircraftGroup = document.getElementById('aircraft-group'); const aircraftSelect = document.getElementById('filter-aircraft'); const dateFromGroup = document.getElementById('date-from-group'); const dateToGroup = document.getElementById('date-to-group'); const fatalGroup = document.getElementById('fatal-group'); const dateFrom = document.getElementById('filter-date-from'); const dateTo = document.getElementById('filter-date-to'); const fatalSelect = document.getElementById('filter-fatal'); const keywordInput = document.getElementById('filter-keyword'); if (regSearch.length > 0) { aircraftGroup.classList.add('disabled'); aircraftSelect.disabled = true; dateFromGroup.classList.add('disabled'); dateToGroup.classList.add('disabled'); fatalGroup.classList.add('disabled'); dateFrom.disabled = true; dateTo.disabled = true; fatalSelect.disabled = true; keywordInput.disabled = true; keywordInput.parentElement.classList.add('disabled'); aircraftSelect.selectedIndex = 0; dateFrom.value = ''; dateTo.value = ''; fatalSelect.value = 'all'; keywordInput.value = ''; } else { aircraftGroup.classList.remove('disabled'); aircraftSelect.disabled = false; dateFromGroup.classList.remove('disabled'); dateToGroup.classList.remove('disabled'); fatalGroup.classList.remove('disabled'); dateFrom.disabled = false; dateTo.disabled = false; fatalSelect.disabled = false; keywordInput.disabled = false; keywordInput.parentElement.classList.remove('disabled'); } applyFilters(); }\n    function applyFilters() { const aircraft = document.getElementById('filter-aircraft').value; const regSearch = document.getElementById('filter-registration').value.toUpperCase().trim(); const keyword = document.getElementById('filter-keyword').value.toLowerCase().trim(); const dateFrom = document.getElementById('filter-date-from').value; const dateTo = document.getElementById('filter-date-to').value; const fatalOnly = document.getElementById('filter-fatal').value === 'fatal'; const prompt = document.getElementById('select-prompt'); const table = document.getElementById('incidents-table-wrapper'); if (regSearch.length > 0) { prompt.style.display = 'none'; table.style.display = 'table'; } else if (!aircraft) { prompt.style.display = 'block'; table.style.display = 'none'; document.getElementById('stat-total').textContent = '0'; document.getElementById('stat-fatal').textContent = '0'; document.getElementById('stat-fatalities').textContent = '0'; document.getElementById('stat-recent').textContent = '0'; return; } else { prompt.style.display = 'none'; table.style.display = 'table'; } let allowedTypes = []; if (aircraft === 'all' || regSearch.length > 0) { allowedTypes = null; } ${jsFilterLogic} else { allowedTypes = [aircraft]; } document.querySelectorAll('.incident-row').forEach(row => { const icao = row.dataset.icao, reg = row.dataset.reg, date = row.dataset.date, searchText = row.dataset.search || ''; const fatalities = parseInt(row.dataset.fatalities) || 0; let show = true; if (regSearch.length > 0) { if (!reg.includes(regSearch)) show = false; } else { if (allowedTypes !== null && !allowedTypes.includes(icao)) show = false; if (keyword && !searchText.includes(keyword)) show = false; if (dateFrom && date && date < dateFrom) show = false; if (dateTo && date && date > dateTo) show = false; if (fatalOnly && fatalities === 0) show = false; } row.style.display = show ? '' : 'none'; row.nextElementSibling.style.display = 'none'; row.classList.remove('expanded'); }); updateStats(); }\n    function clearFilters() { document.getElementById('filter-aircraft').selectedIndex = 0; document.getElementById('filter-registration').value = ''; document.getElementById('filter-keyword').value = ''; document.getElementById('filter-date-from').value = ''; document.getElementById('filter-date-to').value = ''; document.getElementById('filter-fatal').value = 'all'; document.getElementById('aircraft-group').classList.remove('disabled'); document.getElementById('filter-aircraft').disabled = false; document.getElementById('date-from-group').classList.remove('disabled'); document.getElementById('date-to-group').classList.remove('disabled'); document.getElementById('fatal-group').classList.remove('disabled'); document.getElementById('filter-date-from').disabled = false; document.getElementById('filter-date-to').disabled = false; document.getElementById('filter-fatal').disabled = false; document.getElementById('filter-keyword').disabled = false; document.getElementById('filter-keyword').parentElement.classList.remove('disabled'); applyFilters(); }\n  </script>\n</body>\n</html>`;\n\nconst binaryData = Buffer.from(html, 'utf8').toString('base64');\nreturn [{ json: { success: true, size: html.length }, binary: { data: { data: binaryData, mimeType: 'text/html', fileName: 'index.html' } } }];"
+      },
+      "id": "897101c5-6a73-420d-abd1-e601fdf7c6b3",
+      "name": "Regenerate HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        48,
+        -816
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/home/n8n/accident_results/index.html",
+        "options": {}
+      },
+      "id": "0ee7a093-0ac0-4746-a322-bc91d0d8972b",
+      "name": "Write Final HTML",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        256,
+        -816
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "citation-deep-refresh",
+        "options": {}
+      },
+      "id": "4884b7d9-9e2b-4660-aff4-801bfb22c800",
+      "name": "Deep Refresh Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2688,
+        -560
+      ],
+      "webhookId": "YOUR_WEBHOOK_ID_2"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n  id,\n  registration,\n  date_string,\n  incident_date,\n  source_url,\n  raw_narrative,\n  raw_narrative_hash,\n  aircraft_type,\n  aircraft_name,\n  location,\n  fatalities,\n  damage\nFROM citation_incidents\nWHERE source_url LIKE '%wikibase/%'\n  AND incident_date IS NOT NULL\n  AND incident_date <> ''\n  AND to_date(incident_date, 'YYYY-MM-DD') >= (CURRENT_DATE - INTERVAL '12 months')\nORDER BY to_date(incident_date, 'YYYY-MM-DD') DESC;\n",
+        "options": {}
+      },
+      "id": "ca2fcc97-2f1b-4da7-8f22-456d75bfd116",
+      "name": "Query Refresh Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1936,
+        -992
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.source_url }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "d969fef4-c7ad-4629-87b1-92e7ae25a964",
+      "name": "Fetch ASN for Refresh",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1728,
+        -992
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ============================================================\n// Extract & Hash Narrative (NO crypto)\n// ============================================================\n\n// Simple deterministic hash function (8-char hex)\nfunction simpleHash(str) {\n  if (!str) return null;\n  let hash = 0;\n  for (let i = 0; i < str.length; i++) {\n    hash = (hash * 31 + str.charCodeAt(i)) | 0;\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nconst incident = $('Query Refresh Candidates').item.json;\nconst html = $input.item.json.data || '';\n\n// Extract narrative\nlet rawNarrative = '';\nconst narrativePatterns = [\n  /Narrative:[\\s\\S]*?<\\/(?:span|td|b)>([\\s\\S]*?)(?=<(?:span|td|div)[^>]*class|Sources:)/i,\n  /<span[^>]*class=\"[^\"]*caption[^\"]*\"[^>]*>Narrative[^<]*<\\/span>([\\s\\S]*?)(?=<span[^>]*class)/i\n];\nfor (const pattern of narrativePatterns) {\n  const match = html.match(pattern);\n  if (match && match[1]) { rawNarrative = match[1]; break; }\n}\nrawNarrative = rawNarrative\n  .replace(/<br\\s*\\/?>/gi, ' ')\n  .replace(/<[^>]*>/g, '')\n  .replace(/&nbsp;/g, ' ')\n  .replace(/&amp;/g, '&')\n  .replace(/&quot;/g, '\"')\n  .replace(/&#\\d+;/g, '')\n  .replace(/\\s+/g, ' ')\n  .trim();\nif (rawNarrative.length > 5000) rawNarrative = rawNarrative.substring(0, 5000);\n\n// Compute hash without crypto\nconst newHash = rawNarrative.length > 0 ? simpleHash(rawNarrative) : null;\nconst oldHash = incident.raw_narrative_hash || null;\nconst hasChanged = newHash !== oldHash && rawNarrative.length > 50;\n\nconsole.log(`${incident.registration}: Old hash=${oldHash || 'none'}, New hash=${newHash || 'none'}, Changed=${hasChanged}`);\n\nreturn {\n  json: {\n    id: incident.id,\n    registration: incident.registration,\n    date_string: incident.date_string,\n    raw_narrative: rawNarrative,\n    raw_narrative_hash: newHash,\n    old_hash: oldHash,\n    has_changed: hasChanged,\n    narrative_length: rawNarrative.length\n  }\n};\n"
+      },
+      "id": "2c5ea634-eeac-4fe0-a5e1-c8c258aa0a51",
+      "name": "Extract and Hash Narrative",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1520,
+        -992
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "changed-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.has_changed }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "223f5d22-0521-436d-b8fc-c0cab709059b",
+      "name": "Filter Changed Only",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1936,
+        -608
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE citation_incidents \nSET raw_narrative = '{{ $json.raw_narrative.replace(/'/g, \"''\") }}',\n    raw_narrative_hash = '{{ $json.raw_narrative_hash }}',\n    narrative_summary = NULL,\n    updated_at = NOW()\nWHERE registration = '{{ $json.registration }}'\n  AND date_string = '{{ $json.date_string.replace(/'/g, \"''\") }}'",
+        "options": {}
+      },
+      "id": "87bf78c1-aba2-40ef-8ff8-81fb321a0d38",
+      "name": "Update Changed Incidents",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1712,
+        -784
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "ebc4bcc6-4133-4609-bb1d-2b7cd2fa63ec",
+      "name": "Refresh Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1504,
+        -592
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// DEFINE CONFIG - ALL CONFIGURATION IN ONE PLACE\n// ============================================================\n// This node outputs 45 items (one per ASN page URL)\n// Each item contains ALL config for the entire workflow\n// Non-scrape paths use .first().json to get config only\n// ============================================================\n\nconst TESTING_MODE = false;\nconst TEST_LIMIT = 50;\nconst MAX_PAGES_PER_TYPE = 3;\n\n// ============================================================\n// HTML DISPLAY CONFIGURATION\n// ============================================================\n\nconst htmlConfig = {\n  background: './map_background.gif',\n  logo: './logo.png',\n  logoWidth: 260,\n  logoHeight: 200,\n  title: 'Aircraft Incidents and Accidents',\n  homeUrl: 'https://example.com',\n  quote: '\"Those who cannot remember the past are condemned to repeat it.\" \u2014 George Santayana'\n};\n\n// ============================================================\n// AIRCRAFT CONFIGURATION\n// ============================================================\n\nconst asnPagesToFetch = [\n  'C525', 'C25A', 'C25B', 'C25C', 'C25M',\n  'C500', 'C501', 'C550', 'C551', 'S550', 'C560',\n  'C56X',\n  'CL30', 'CL35'\n];\n\nconst aircraftTypeOrder = [\n  'C525', 'C25A', 'C25B', 'C25C', 'C25M',\n  'C500', 'C501', 'C550', 'C551', 'S550', 'C560',\n  'C56X',\n  'CL30', 'CL35'\n];\n\nconst normalizationRules = [\n  { match: 'CJ4', icao: 'C25C', name: 'Citation CJ4' },\n  { match: '525C', icao: 'C25C', name: 'Citation CJ4' },\n  { match: 'CJ3', icao: 'C25B', name: 'Citation CJ3/CJ3+' },\n  { match: '525B', icao: 'C25B', name: 'Citation CJ3/CJ3+' },\n  { match: 'CJ2', icao: 'C25A', name: 'Citation CJ2/CJ2+' },\n  { match: '525A', icao: 'C25A', name: 'Citation CJ2/CJ2+' },\n  { match: ' M2', icao: 'C25M', name: 'Citation M2' },\n  { match: 'CJ1', icao: 'C525', name: 'CitationJet/CJ1' },\n  { match: 'CitationJet', icao: 'C525', name: 'CitationJet/CJ1' },\n  { match: '525', icao: 'C525', name: 'CitationJet/CJ1' },\n  { match: '560XL', icao: 'C56X', name: 'Citation Excel/XLS' },\n  { match: 'Excel', icao: 'C56X', name: 'Citation Excel/XLS' },\n  { match: 'XLS', icao: 'C56X', name: 'Citation Excel/XLS' },\n  { match: 'C56X', icao: 'C56X', name: 'Citation Excel/XLS' },\n  { match: 'S550', icao: 'S550', name: 'Citation S/II' },\n  { match: 'S/II', icao: 'S550', name: 'Citation S/II' },\n  { match: '551', icao: 'C551', name: 'Citation II/SP' },\n  { match: 'Bravo', icao: 'C550', name: 'Citation II/Bravo' },\n  { match: '550', icao: 'C550', name: 'Citation II/Bravo' },\n  { match: 'Encore', icao: 'C560', name: 'Citation V/Ultra/Encore' },\n  { match: 'Ultra', icao: 'C560', name: 'Citation V/Ultra/Encore' },\n  { match: '560', icao: 'C560', name: 'Citation V/Ultra/Encore' },\n  { match: '501', icao: 'C501', name: 'Citation I/SP' },\n  { match: '500', icao: 'C500', name: 'Citation I' },\n  { match: 'Challenger 350', icao: 'CL35', name: 'Challenger 350' },\n  { match: 'CL-350', icao: 'CL35', name: 'Challenger 350' },\n  { match: 'CL35', icao: 'CL35', name: 'Challenger 350' },\n  { match: 'Challenger 300', icao: 'CL30', name: 'Challenger 300' },\n  { match: 'CL-300', icao: 'CL30', name: 'Challenger 300' },\n  { match: 'CL30', icao: 'CL30', name: 'Challenger 300' },\n];\n\nconst aircraftGroups = [\n  { id: 'ce525', name: 'All CE525 Aircraft', types: ['C525', 'C25A', 'C25B', 'C25C', 'C25M'] },\n  { id: 'ce500', name: 'All CE500 Aircraft', types: ['C500', 'C501', 'C550', 'C551', 'S550', 'C560'] },\n  { id: 'ce560xl', name: 'All CE560XL Aircraft', types: ['C56X'] },\n  { id: 'challenger', name: 'All CL30 / CL35 Aircraft', types: ['CL30', 'CL35'] }\n];\n\n// ============================================================\n// LINK FILTER CONFIGURATION\n// ============================================================\n\nconst urlBlacklist = [\n  'https://www.youtube.com/user/AviationSafetyNet',\n  'https://asn.flightsafety.org',\n  'https://flightsafety.org/foundation/support/',\n  'https://flightsafety.org/',\n  'https://flightsafety.org',\n  'https://aviation-safety.net/asndb/type/',\n  'https://www.youtube.com/channel/UCYS5ObEBNuW9s3j7SMzxvLQ'\n];\n\nconst whitelistDomains = [\n  'ntsb.gov', 'bst-tsb.gc.ca',\n  'kathrynsreport.com', 'avherald.com', 'fl360aero.com',\n  'flightaware.com', 'flightradar24.com', 'adsbexchange.com',\n  'jetphotos.com', 'planespotters.net', 'airliners.net',\n  'youtube.com', 'youtu.be', 'liveatc.net'\n];\n\nconst excludeDomains = [\n  'facebook.com', 'twitter.com', 'x.com', 'instagram.com', 'linkedin.com',\n  'tiktok.com', 'pinterest.com', 'reddit.com', 'tumblr.com', 'github.com',\n  'google.com', 'googletagmanager.com', 'google-analytics.com', 'gstatic.com',\n  'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',\n  'w3.org', 'schema.org', 'cloudflare.com', 'jsdelivr.net', 'cdnjs.com',\n  'jquery.com', 'bootstrapcdn.com', 'fontawesome.com', 'fonts.googleapis.com',\n  'amazon.com', 'ebay.com', 'bit.ly', 'tinyurl.com', 't.co',\n  'faa.gov', 'flightsafety.org'\n];\n\nconst excludeExtensions = ['.css', '.js', '.woff', '.woff2', '.ttf', '.eot', '.ico'];\n\nconst trustedDomains = [\n  'ntsb.gov', 'faa.gov', 'bst-tsb.gc.ca', 'aviation-safety.net',\n  'kathrynsreport.com', 'avherald.com'\n];\n\n// ============================================================\n// NEWS DOMAIN CATEGORIZATION (from Press Gazette Top 50 US)\n// ============================================================\n\n// MAJOR NATIONAL/INTERNATIONAL NEWS - get 'major_news' category\nconst majorNewsDomains = [\n  // Top US news sites\n  'nytimes.com', 'cnn.com', 'foxnews.com', 'usatoday.com', 'msn.com',\n  'people.com', 'nypost.com', 'yahoo.com',\n  // Major networks\n  'nbcnews.com', 'abcnews.go.com', 'cbsnews.com', 'msnbc.com',\n  // Major newspapers\n  'washingtonpost.com', 'latimes.com', 'chicagotribune.com', 'bostonglobe.com',\n  'sfchronicle.com', 'dallasnews.com', 'houstonchronicle.com', 'denverpost.com',\n  // Wire services\n  'reuters.com', 'apnews.com', 'upi.com',\n  // International English news\n  'bbc.com', 'bbc.co.uk', 'theguardian.com', 'telegraph.co.uk', 'independent.co.uk',\n  'dailymail.co.uk', 'mirror.co.uk', 'thesun.co.uk', 'express.co.uk',\n  'skynews.com', 'news.sky.com', 'aljazeera.com', 'dw.com',\n  // Major digital outlets\n  'huffpost.com', 'huffingtonpost.com', 'businessinsider.com', 'insider.com',\n  'forbes.com', 'bloomberg.com', 'cnbc.com', 'axios.com', 'politico.com',\n  'thehill.com', 'theatlantic.com', 'newsweek.com', 'time.com', 'usnews.com',\n  'buzzfeednews.com', 'vice.com', 'vox.com', 'slate.com', 'thedailybeast.com',\n  // Entertainment that covers news\n  'variety.com', 'hollywoodreporter.com', 'deadline.com', 'tmz.com', 'eonline.com'\n];\n\n// LOCAL TV AFFILIATE PATTERNS - EXPANDED\n// Matches: abc7, nbc5, cbs2, fox26, nbcsandiego, nbclosangeles, cbsaustin, etc.\nconst localTvAffiliatePatterns = [\n  // Network + number patterns (abc7, nbc5, cbs2, fox26)\n  '^abc\\\\d+', '^cbs\\\\d+', '^nbc\\\\d+', '^fox\\\\d+',\n  // Network + city name patterns (nbcsandiego, nbclosangeles, cbsaustin)\n  '^nbc[a-z]+', '^abc[a-z]+', '^cbs[a-z]+', '^fox[a-z]+',\n  // Call sign patterns (K/W prefix stations)\n  '^kpix', '^kabc', '^wabc', '^wcbs', '^wnbc', '^wnyw', '^wfaa', '^khou',\n  '^ksdk', '^wcvb', '^wgn', '^ktla', '^wpxi', '^kens', '^ksat', '^kprc',\n  '^kxan', '^wesh', '^wbal', '^wkyc', '^wvtm', '^wxyz', '^wral', '^wsb',\n  '^wfla', '^wjxt', '^kiro', '^king5', '^komo', '^kvue', '^wfts', '^wptv',\n  '^wsvn', '^wplg', '^wpbf', '^wftv', '^kgtv', '^kswb', '^knsd', '^kfmb',\n  '^kusi', '^wtvj', '^wfor', '^wbbm', '^wmaq', '^wls', '^kttv', '^kcbs',\n  '^kcal', '^knbc', '^kpho', '^ktvk', '^kpnx', '^kfyi', '^ksaz', '^knxv',\n  '^krqe', '^koat', '^kob', '^kdvr', '^kcnc', '^kmgh', '^kusa', '^kwgn',\n  // Other patterns\n  '^click2', '^local\\\\d+', '^\\\\d+news', '^news\\\\d+'\n];\n\n// REGIONAL/LOCAL NEWS PATTERNS\nconst newsIndicatorPatterns = [\n  'news', 'post', 'times', 'herald', 'gazette', 'tribune', 'journal',\n  'press', 'daily', 'star', 'sun', 'dispatch', 'chronicle', 'examiner',\n  'observer', 'reporter', 'courier', 'sentinel', 'register', 'record',\n  'inquirer', 'democrat', 'republican', 'statesman', 'telegram', 'pilot',\n  'beacon', 'banner', 'leader', 'advocate', 'patch', 'sfgate', 'mlive',\n  'nj.com', 'al.com', 'cleveland.com', 'oregonlive.com', 'masslive.com',\n  'pennlive.com', 'silive.com'\n];\n\n// ATC/AVIATION AUDIO\nconst atcDomains = ['liveatc.net', 'globalair.com', 'broadcastify.com'];\n\n// ============================================================\n// BUILD CONFIG OBJECT\n// ============================================================\n\nconst config = {\n  _testingMode: TESTING_MODE,\n  _testLimit: TEST_LIMIT,\n  _htmlConfig: htmlConfig,\n  _normalizationRules: normalizationRules,\n  _aircraftGroups: aircraftGroups,\n  _aircraftTypeOrder: aircraftTypeOrder,\n  _linkFilters: {\n    urlBlacklist,\n    whitelistDomains,\n    excludeDomains,\n    excludeExtensions,\n    trustedDomains,\n    majorNewsDomains,\n    localTvAffiliatePatterns,\n    newsIndicatorPatterns,\n    atcDomains\n  }\n};\n\n// ============================================================\n// GENERATE OUTPUT ITEMS (one per ASN page URL)\n// ============================================================\n\nconst input = $input.first().json;\nconst triggerSource = input.triggerSource || '';\n\nconst output = [];\n\nfor (const icao of asnPagesToFetch) {\n  for (let pageNum = 1; pageNum <= MAX_PAGES_PER_TYPE; pageNum++) {\n    const url = pageNum === 1 \n      ? `https://aviation-safety.net/asndb/type/${icao}`\n      : `https://aviation-safety.net/asndb/type/${icao}/${pageNum}`;\n    \n    output.push({\n      json: {\n        triggerSource,\n        icao,\n        pageNum,\n        url,\n        ...config\n      }\n    });\n  }\n}\n\nconsole.log(`Define Config: Generated ${output.length} URLs for ${asnPagesToFetch.length} aircraft types`);\nreturn output;"
+      },
+      "id": "3aa8e17c-e084-48c1-b00b-c60cd5d5737e",
+      "name": "Define Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2064,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.triggerSource || '' }}",
+                    "rightValue": "deep-refresh",
+                    "operator": {
+                      "type": "string",
+                      "operation": "contains"
+                    },
+                    "id": "6b49df8d-4b82-488d-800f-74703d647032"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c710e085-1198-4bdd-8234-30224f4a4703",
+                    "leftValue": "={{ $json.triggerSource || '' }}",
+                    "rightValue": "serpapi",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SerpAPI"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "a65238e4-8f96-4853-a1f3-c7a5040d6d5b",
+      "name": "Route After Config",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -1728,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "citation-ai-narrative",
+        "options": {}
+      },
+      "id": "9468e1da-20f9-48bf-a015-a649329aa9d9",
+      "name": "Manual AI Narrative Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2688,
+        -160
+      ],
+      "webhookId": "YOUR_WEBHOOK_ID_3"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, registration, date_string, incident_date, source_url, raw_narrative, \n       aircraft_type, aircraft_name, location, fatalities, damage, operator\nFROM citation_incidents \nWHERE raw_narrative IS NOT NULL \n  AND LENGTH(raw_narrative) > 50\n  AND (narrative_summary IS NULL OR LENGTH(narrative_summary) < 20)\nORDER BY incident_date DESC",
+        "options": {}
+      },
+      "id": "3b89e36b-4b44-4eae-b4fe-7411c7c2b519",
+      "name": "Query AI Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -2000,
+        -352
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format database records for AI processing\nconst items = $input.all();\n\nif (items.length === 0 || (items.length === 1 && !items[0].json.registration)) {\n  return [{ json: { skip: true, message: 'No incidents need AI narrative processing' } }];\n}\n\nconsole.log(`Manual AI run: Processing ${items.length} incidents`);\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    has_narrative: true,\n    asn_source_links: [] // No new links from this path\n  }\n}));"
+      },
+      "id": "5c5ae8e4-84c7-40c0-8f3f-161a79099fcf",
+      "name": "Format for AI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1840,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-ai-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7f703ff8-75c1-4f99-9397-73cd1f407b6d",
+      "name": "Check AI Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1664,
+        -352
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "813af0f7-2c0f-496b-b9e1-aecf50955430",
+      "name": "AI Processing Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -1488,
+        -352
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "citation-serpapi-links",
+        "options": {}
+      },
+      "id": "0adff6db-f6a5-4c10-b81a-69484b9c89c6",
+      "name": "Manual SerpAPI Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2688,
+        -368
+      ],
+      "webhookId": "YOUR_WEBHOOK_ID_4"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, registration, date_string, incident_date, location, aircraft_type, aircraft_name, fatalities, damage, additional_links\nFROM citation_incidents \nWHERE (fatalities > 0 OR damage = 'w/o' OR damage = 'sub')\n  AND registration IS NOT NULL\n  AND (\n    serpapi_searched_at IS NULL\n    OR (\n      incident_date > CURRENT_DATE - INTERVAL '6 months'\n      AND serpapi_searched_at < NOW() - INTERVAL '30 days'\n    )\n    OR (\n      incident_date BETWEEN CURRENT_DATE - INTERVAL '2 years' AND CURRENT_DATE - INTERVAL '6 months'\n      AND serpapi_searched_at < NOW() - INTERVAL '90 days'\n    )\n  )\nORDER BY incident_date DESC",
+        "options": {}
+      },
+      "id": "e6ae370c-f4e3-4bef-9382-0c34d4106a7f",
+      "name": "Query SerpAPI Candidates",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1072,
+        -752
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SERPAPI LIMIT CONFIGURATION (Manual Webhook)\n// ============================================================\nconst SERPAPI_LIMIT = 1000;\n// ============================================================\n\nconst items = $input.all();\nconsole.log(`Filter SerpAPI: Received ${items.length} items`);\n\nconst needsLinks = items.filter(item => {\n  const inc = item.json;\n  if (!inc.registration) return false;\n  \n  let existingLinks = inc.additional_links || [];\n  if (typeof existingLinks === 'string') {\n    try { existingLinks = JSON.parse(existingLinks); } catch(e) { existingLinks = []; }\n  }\n  if (!Array.isArray(existingLinks)) existingLinks = [];\n  \n  const hasGoogleLinks = existingLinks.some(l => {\n    const src = l.source || '';\n    return src !== '' && src !== 'asn_page' && src !== 'auto_generated';\n  });\n  \n  return !hasGoogleLinks;\n});\n\nconst toProcess = SERPAPI_LIMIT > 0 ? needsLinks.slice(0, SERPAPI_LIMIT) : [];\nconsole.log(`Manual SerpAPI: ${needsLinks.length} need links, processing ${toProcess.length}`);\n\nif (toProcess.length === 0) {\n  return [{ json: { skip: true, message: 'No incidents need Google link enrichment' } }];\n}\n\n// Add itemIndex for merging after Search Google Links\nreturn toProcess.map((item, index) => ({ json: { ...item.json, itemIndex: index } }));"
+      },
+      "id": "3791e74c-2df7-4ce8-a2d0-e880d58995d3",
+      "name": "Filter SerpAPI Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        -752
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "skip-serpapi-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ad992f2e-5afd-45ac-a98b-c3145ca03a39",
+      "name": "Check SerpAPI Skip",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -720,
+        -752
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "83d963a8-39cb-4327-81b8-e7df41a5b73e",
+      "name": "SerpAPI Processing Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -544,
+        -752
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "triggerSource",
+              "value": "deep-refresh"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Trigger \u2013 Deep Refresh",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        -560
+      ],
+      "id": "03f1b60d-fe79-478d-97ff-f1452211b34f"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "triggerSource",
+              "value": "manual"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Trigger \u2013 Manual",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        -752
+      ],
+      "id": "693c18ff-2015-49d5-bab1-bdf977d40f93"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "triggerSource",
+              "value": "daily"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Trigger \u2013 Daily",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        -928
+      ],
+      "id": "21e4e3aa-1481-4f4d-ac5d-4848bde33f93"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Consolidate all upsert outputs to trigger query only once\nconst count = $input.all().length;\nconsole.log(`Upsert completed for ${count} incidents, querying database once`);\nreturn [{ json: { upserted: count } }];"
+      },
+      "id": "consolidate-query",
+      "name": "Consolidate Before Query",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "triggerSource",
+              "value": "serpapi"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Trigger \u2013 SerpAPI",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        -2416,
+        -368
+      ],
+      "id": "775b5659-7ec8-49f3-81ff-1ac7161a5242"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT registration, date_string, incident_date, updated_at,\n       CASE WHEN raw_narrative IS NOT NULL AND LENGTH(raw_narrative) > 50 \n            THEN true ELSE false END as has_detail\nFROM citation_incidents",
+        "options": {}
+      },
+      "id": "query-existing-records",
+      "name": "Query Existing Records",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -832,
+        -1280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "YOUR_POSTGRES_CREDENTIAL_ID",
+          "name": "Postgres Citation Accidents"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// SMART REFRESH FILTER - Age-based detail fetch optimization\n// ============================================================\n// Only fetches ASN detail pages for incidents that need updates:\n// - >5 years old: never re-fetch (investigation complete)\n// - 2-5 years old: skip if updated within 6 months\n// - 1-2 years old: skip if updated within 3 months  \n// - <1 year old: skip if updated within 2 weeks\n// - Not in database: always fetch\n// ============================================================\n\n// Get incidents from Parse ASN Table (NOT from input!)\nconst incidents = $('Parse ASN Table').all().map(item => item.json);\nconst today = new Date();\n\nconsole.log(`Smart Filter: Received ${incidents.length} incidents from Parse ASN Table`);\n\n// Build lookup from database records\nconst existingRecords = {};\ntry {\n  const dbRecords = $('Query Existing Records').all();\n  for (const rec of dbRecords) {\n    const key = `${rec.json.registration}|${rec.json.date_string}`;\n    existingRecords[key] = {\n      updated_at: rec.json.updated_at ? new Date(rec.json.updated_at) : null,\n      incident_date: rec.json.incident_date ? new Date(rec.json.incident_date) : null,\n      has_detail: rec.json.has_detail === true\n    };\n  }\n  console.log(`Smart Filter: Loaded ${Object.keys(existingRecords).length} existing records from DB`);\n} catch(e) {\n  console.log('Smart Filter: No existing records found - will fetch all');\n}\n\nconst toFetch = [];\nconst skipped = { '>5yr': 0, '2-5yr': 0, '1-2yr': 0, '<1yr': 0 };\nlet newCount = 0;\n\nfor (const inc of incidents) {\n  // Skip empty placeholders\n  if (inc._empty) continue;\n  \n  const key = `${inc.registration}|${inc.date_string}`;\n  const existing = existingRecords[key];\n  \n  // Not in database or no detail yet -> always fetch\n  if (!existing || !existing.has_detail) {\n    toFetch.push(inc);\n    newCount++;\n    continue;\n  }\n  \n  // Calculate age of incident\n  const incDate = inc.incident_date ? new Date(inc.incident_date) : \n                  (existing.incident_date ? existing.incident_date : null);\n  const lastUpdate = existing.updated_at;\n  \n  // Age in years (approximate)\n  const ageYears = incDate ? (today - incDate) / (365.25 * 24 * 60 * 60 * 1000) : 999;\n  // Days since last update\n  const daysSinceUpdate = lastUpdate ? (today - lastUpdate) / (24 * 60 * 60 * 1000) : 999;\n  \n  let shouldFetch = true;\n  let bucket = '';\n  \n  if (ageYears > 5) {\n    // >5 years old: never re-fetch (investigation long complete)\n    shouldFetch = false;\n    bucket = '>5yr';\n  } else if (ageYears >= 2) {\n    // 2-5 years: only if not updated in 6 months (180 days)\n    bucket = '2-5yr';\n    if (daysSinceUpdate < 180) {\n      shouldFetch = false;\n    }\n  } else if (ageYears >= 1) {\n    // 1-2 years: only if not updated in 3 months (90 days)\n    bucket = '1-2yr';\n    if (daysSinceUpdate < 90) {\n      shouldFetch = false;\n    }\n  } else {\n    // <1 year: only if not updated in 2 weeks (14 days)\n    bucket = '<1yr';\n    if (daysSinceUpdate < 14) {\n      shouldFetch = false;\n    }\n  }\n  \n  if (shouldFetch) {\n    toFetch.push(inc);\n  } else {\n    skipped[bucket]++;\n  }\n}\n\n// Log statistics\nconst totalSkipped = skipped['>5yr'] + skipped['2-5yr'] + skipped['1-2yr'] + skipped['<1yr'];\nconsole.log(`Smart Filter Results:`);\nconsole.log(`  To fetch: ${toFetch.length} (${newCount} new + ${toFetch.length - newCount} need refresh)`);\nconsole.log(`  Skipped: ${totalSkipped} total`);\nconsole.log(`    >5yr old (never refresh): ${skipped['>5yr']}`);\nconsole.log(`    2-5yr old (updated <6mo): ${skipped['2-5yr']}`);\nconsole.log(`    1-2yr old (updated <3mo): ${skipped['1-2yr']}`);\nconsole.log(`    <1yr old (updated <2wk): ${skipped['<1yr']}`);\n\nif (toFetch.length === 0) {\n  return [{ json: { _empty: true, message: 'No incidents need detail fetch - all up to date' } }];\n}\n\nreturn toFetch.map(inc => ({ json: inc }));"
+      },
+      "id": "filter-detail-fetch",
+      "name": "Filter Detail Fetch Candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "all_parsed_incidents",
+        "include": "allFieldsExcept",
+        "options": {}
+      },
+      "id": "aggregate-before-query",
+      "name": "Aggregate Before DB Query",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -1024,
+        -1280
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Activate and Run ONCE -Then Deactivate",
+        "height": 288,
+        "width": 512
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2736,
+        -1360
+      ],
+      "id": "1f772cac-b2f6-4bbe-87c1-ab2591bbd61b",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## Trigger Nodes\nUpdate Run time to your desired time",
+        "height": 1040,
+        "width": 512
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2736,
+        -1040
+      ],
+      "id": "1f1098ef-b6b1-4c50-85da-c70f038bcde6",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Adjust all configurations here!",
+        "height": 288,
+        "width": 368,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2208,
+        -1360
+      ],
+      "id": "7a4c766b-fc42-4aa7-ba0a-c5f6434ddaf3",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## Routing Logic",
+        "height": 288,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1824,
+        -1360
+      ],
+      "id": "ba564b46-2ccd-438a-aa06-af426df7396f",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## Deep Refresh Logic",
+        "height": 608,
+        "width": 704
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2048,
+        -1056
+      ],
+      "id": "5294be70-0e2d-419f-91bb-9ca5d8675c8f",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## Daily Run Logic",
+        "height": 288,
+        "width": 2704
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1472,
+        -1360
+      ],
+      "id": "cc9dbb2d-5477-4384-bbc4-2c98b6527e09",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "url": "https://serpapi.com/search",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "serpApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google"
+            },
+            {
+              "name": "q",
+              "value": "=\"{{ $json.registration }}\" {{ $json.aircraft_name }} accident"
+            },
+            {
+              "name": "num",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 3000
+            }
+          },
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "d1ea5748-97b7-45b0-a25e-f3f157e97c00",
+      "name": "Search Google",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -880,
+        -912
+      ],
+      "credentials": {
+        "serpApi": {
+          "id": "YOUR_SERPAPI_CREDENTIAL_ID",
+          "name": "SerpAPI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Enrichment Logic\nAdding additional content links",
+        "height": 608,
+        "width": 1200
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        -1056
+      ],
+      "id": "db878cb6-f078-4d4c-830e-c1bf9e765247",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "## Rebuild Website After Enrichment\nIf new enrichment materials added",
+        "height": 608,
+        "width": 624
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        -1056
+      ],
+      "id": "d1dbd2a7-1c2f-4ca5-9929-c39f95020f82",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "## Manually Fire AI Narrative\nLooks for Accidents/Incidents w/o an AI Summary",
+        "height": 304,
+        "width": 704
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2048,
+        -432
+      ],
+      "id": "d25b744c-fc1f-46d7-af6a-3fb7d9379729",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "## Generate AI Summary",
+        "height": 512,
+        "width": 1840,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1328,
+        -432
+      ],
+      "id": "be425297-0260-403c-98ca-98f623a4c6c2",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "## Build & Publish Website",
+        "height": 288,
+        "width": 352,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        656,
+        -1360
+      ],
+      "id": "d5fd8046-73ea-46b3-ae8a-a964a4ce6063",
+      "name": "Sticky Note10"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch ASN Page": {
+      "main": [
+        [
+          {
+            "node": "Parse ASN Table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [
+          {
+            "node": "Flatten Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query All Incidents": {
+      "main": [
+        [
+          {
+            "node": "Generate HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate HTML": {
+      "main": [
+        [
+          {
+            "node": "Write HTML File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter For Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Check If Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Skip": {
+      "main": [
+        [
+          {
+            "node": "Wait for Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Search Google",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Search Results": {
+      "main": [
+        [
+          {
+            "node": "Update Links in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Links in DB": {
+      "main": [
+        [
+          {
+            "node": "Wait for Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten Results": {
+      "main": [
+        [
+          {
+            "node": "Upsert Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Init Trigger": {
+      "main": [
+        [
+          {
+            "node": "Create Table (Run Once)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter For Narrative": {
+      "main": [
+        [
+          {
+            "node": "Check Narrative Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Narrative Skip": {
+      "main": [
+        [
+          {
+            "node": "Wait for Narrative",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch ASN Detail Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch ASN Detail Page": {
+      "main": [
+        [
+          {
+            "node": "Extract Narrative Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Update Narrative in DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Narrative in DB": {
+      "main": [
+        [
+          {
+            "node": "Wait for Narrative",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Narrative": {
+      "main": [
+        [
+          {
+            "node": "Filter For Enrichment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Aviation Safety Expert",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aviation Safety Expert": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Narrative Text": {
+      "main": [
+        [
+          {
+            "node": "Aviation Safety Expert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write HTML File": {
+      "main": [
+        [
+          {
+            "node": "Filter For Narrative",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Detail Pages": {
+      "main": [
+        [
+          {
+            "node": "Extract ASN Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract ASN Sources": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Enrichment": {
+      "main": [
+        [
+          {
+            "node": "Query Final Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Final Data": {
+      "main": [
+        [
+          {
+            "node": "Regenerate HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regenerate HTML": {
+      "main": [
+        [
+          {
+            "node": "Write Final HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Refresh Candidates": {
+      "main": [
+        [
+          {
+            "node": "Fetch ASN for Refresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch ASN for Refresh": {
+      "main": [
+        [
+          {
+            "node": "Extract and Hash Narrative",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract and Hash Narrative": {
+      "main": [
+        [
+          {
+            "node": "Filter Changed Only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Changed Only": {
+      "main": [
+        [
+          {
+            "node": "Update Changed Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Refresh Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Changed Incidents": {
+      "main": [
+        [
+          {
+            "node": "Refresh Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 8 AM": {
+      "main": [
+        [
+          {
+            "node": "Set Trigger \u2013 Daily",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Run Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Trigger \u2013 Manual",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deep Refresh Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Trigger \u2013 Deep Refresh",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Define Config": {
+      "main": [
+        [
+          {
+            "node": "Route After Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual AI Narrative Webhook": {
+      "main": [
+        [
+          {
+            "node": "Query AI Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query AI Candidates": {
+      "main": [
+        [
+          {
+            "node": "Format for AI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format for AI": {
+      "main": [
+        [
+          {
+            "node": "Check AI Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check AI Skip": {
+      "main": [
+        [
+          {
+            "node": "AI Processing Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Aviation Safety Expert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual SerpAPI Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Trigger \u2013 SerpAPI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query SerpAPI Candidates": {
+      "main": [
+        [
+          {
+            "node": "Filter SerpAPI Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter SerpAPI Candidates": {
+      "main": [
+        [
+          {
+            "node": "Check SerpAPI Skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check SerpAPI Skip": {
+      "main": [
+        [
+          {
+            "node": "SerpAPI Processing Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Search Google",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Complete": {
+      "main": [
+        [
+          {
+            "node": "Query Final Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route After Config": {
+      "main": [
+        [
+          {
+            "node": "Query Refresh Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Query SerpAPI Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch ASN Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Processing Complete": {
+      "main": [
+        [
+          {
+            "node": "Query Final Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SerpAPI Processing Complete": {
+      "main": [
+        [
+          {
+            "node": "Query Final Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Trigger \u2013 Deep Refresh": {
+      "main": [
+        [
+          {
+            "node": "Define Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Trigger \u2013 Manual": {
+      "main": [
+        [
+          {
+            "node": "Define Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Trigger \u2013 Daily": {
+      "main": [
+        [
+          {
+            "node": "Define Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Incidents": {
+      "main": [
+        [
+          {
+            "node": "Consolidate Before Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consolidate Before Query": {
+      "main": [
+        [
+          {
+            "node": "Query All Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Trigger \u2013 SerpAPI": {
+      "main": [
+        [
+          {
+            "node": "Define Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Existing Records": {
+      "main": [
+        [
+          {
+            "node": "Filter Detail Fetch Candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Detail Fetch Candidates": {
+      "main": [
+        [
+          {
+            "node": "Fetch Detail Pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse ASN Table": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Before DB Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Before DB Query": {
+      "main": [
+        [
+          {
+            "node": "Query Existing Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Google": {
+      "main": [
+        [
+          {
+            "node": "Parse Search Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "YOUR_VERSION_ID",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "YOUR_INSTANCE_ID"
+  },
+  "id": "YOUR_WORKFLOW_ID",
+  "tags": []
+}
