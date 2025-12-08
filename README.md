@@ -33,6 +33,11 @@ The entire system runs as an n8n workflow with PostgreSQL storage, designed for 
 
 ---
 
+<p align="center">
+  <img src="./images/screenshot2.png" alt="Aircraft Accident Tracker">
+</p>
+
+---
 
 ## Table of Contents
 
